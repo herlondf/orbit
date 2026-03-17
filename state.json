@@ -1,0 +1,103 @@
+{
+  "issue": "OctoChat",
+  "context": "hdx",
+  "status": "active",
+  "current_step": "analysis",
+  "current_release": "working",
+  "created_at": "2026-03-15 14:42 UTC",
+  "updated_at": "2026-03-15 22:12 UTC",
+  "next_action": "Proximo passo: executar build_windows.bat no host Windows para gerar o exe/bundles do OctoChat e validar manualmente o app rodando com restauracao de sessoes, operacao em lote, tray e notificacoes nativas.",
+  "last_checkpoint": {
+    "timestamp": "2026-03-15 22:12 UTC",
+    "done": "Checkpoint de sessao confirmado: OctoChat possui build_windows.bat para gerar o executavel no Windows, com shell Tauri preparado para restauracao de sessoes, operacao em lote, tray, notificacoes e trilha de eventos do runtime.",
+    "next": "Proximo passo: executar build_windows.bat no host Windows para gerar o exe/bundles do OctoChat e validar manualmente o app rodando com restauracao de sessoes, operacao em lote, tray e notificacoes nativas.",
+    "blocker": null,
+    "strategy": null
+  },
+  "checkpoints": [
+    {
+      "timestamp": "2026-03-15 15:02 UTC",
+      "done": "Esqueleto R0 aberto em project/ com Vite+React, shell multichat inicial, contrato Tauri v2 em src-tauri/ e build web validado via npm run build.",
+      "next": "Instalar/validar Rust+cargo no Windows e executar a prova real Tauri para multiwebview, isolamento de sessao, notificacoes e tray.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 17:02 UTC",
+      "done": "R0 fortalecido no proprio OctoChat: shell multichat agora persiste workspace localmente, ganhou busca/fixacao/preferencias operacionais e o contrato minimo Tauri foi estendido com runtime_probe/build_session_contract. Build web validado com npm run build.",
+      "next": "Proximo passo: validar o runtime Tauri real no Windows com Rust/cargo disponiveis para provar multiwebview, isolamento de sessao por conta, tray e notificacoes.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 17:20 UTC",
+      "done": "Prerequisitos Windows do Tauri validados no contexto do OctoChat: WebView2 presente, mas host sem cargo/rustc e sem Microsoft C++ Build Tools; npm run tauri:dev falha exatamente em cargo metadata. Documentacao e validacao atualizadas com o bloqueio real do host.",
+      "next": "Proximo passo: instalar Rust stable-msvc e Microsoft C++ Build Tools no host Windows e reexecutar tauri:dev para provar multiwebview, isolamento de sessao por conta, tray e notificacoes.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 19:15 UTC",
+      "done": "Toolchain Windows e runtime Tauri validados no OctoChat: Rust/MSVC localizados, icones do app gerados, cargo check aprovado e npm run tauri:dev compilou e executou target/debug/octochat.exe no host Windows.",
+      "next": "Proximo passo: substituir o slot visual por webviews reais e provar isolamento de sessao/storage por conta dentro do runtime Tauri.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 19:17 UTC",
+      "done": "Toolchain Windows e runtime Tauri validados no OctoChat: Rust/MSVC localizados, icones do app gerados, cargo check aprovado e npm run tauri:dev compilou e executou target/debug/octochat.exe no host Windows.",
+      "next": "Proximo passo: substituir o slot visual por webviews reais e provar isolamento de sessao/storage por conta dentro do runtime Tauri.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 19:23 UTC",
+      "done": "OctoChat ganhou host inicial de webviews reais por conta via WebviewWindow com dataDirectory segregado em src/serviceHost.ts; o shell passou a abrir/focar/fechar janelas reais por conta e o recorte continuou verde em npm run build e cargo check no ambiente Tauri/MSVC.",
+      "next": "Proximo passo: validar manualmente no app rodando a abertura/foco/fechamento das webviews por conta e então evoluir para multiwebview simultanea, tray e notificacoes nativas.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 19:53 UTC",
+      "done": "OctoChat ganhou base nativa de tray e notificacoes no shell desktop via src/desktopShell.ts e tauri-plugin-notification; o recorte permaneceu verde em npm run build e cargo check no ambiente Tauri/MSVC.",
+      "next": "Proximo passo: validar no app rodando as webviews reais por conta, a inicializacao do tray e o disparo de notificacoes, e entao evoluir para multiwebview simultanea operacional.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 19:58 UTC",
+      "done": "OctoChat agora persiste liveAccountIds, restaura webviews vivas no startup, sincroniza o shell com janelas abertas e opera abertura/fechamento em lote por servico; o recorte permaneceu verde em npm run build e cargo check no ambiente Tauri/MSVC, e src-tauri/target foi removido do indice da issue para evitar ruido de build.",
+      "next": "Proximo passo: validar no app rodando a restauracao de sessoes, a operacao em lote por servico, o tray e as notificacoes nativas, e entao decidir o salto para composicao integrada de multiwebview no shell principal.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 20:03 UTC",
+      "done": "OctoChat ganhou trilha de eventos do runtime, reconciliacao manual do estado das webviews e encerramento global de sessoes persistidas no shell; o recorte permaneceu verde em npm run build e cargo check no ambiente Tauri/MSVC.",
+      "next": "Proximo passo: validar no app rodando a restauracao de sessoes, a abertura/fechamento em lote por servico, a reconciliacao manual do runtime, o tray e as notificacoes nativas, e entao decidir o salto para multiwebview integrado no shell principal.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 21:13 UTC",
+      "done": "OctoChat ganhou build_windows.bat no padrao operacional do workspace, preparando Node, MSVC e Rust para acionar npm run tauri:build no Windows; o README do projeto foi atualizado para documentar o uso do script.",
+      "next": "Proximo passo: executar build_windows.bat no host Windows para gerar o exe/bundles do OctoChat e validar manualmente o app rodando com restauracao de sessoes, operacao em lote, tray e notificacoes nativas.",
+      "blocker": null,
+      "strategy": null
+    },
+    {
+      "timestamp": "2026-03-15 22:12 UTC",
+      "done": "Checkpoint de sessao confirmado: OctoChat possui build_windows.bat para gerar o executavel no Windows, com shell Tauri preparado para restauracao de sessoes, operacao em lote, tray, notificacoes e trilha de eventos do runtime.",
+      "next": "Proximo passo: executar build_windows.bat no host Windows para gerar o exe/bundles do OctoChat e validar manualmente o app rodando com restauracao de sessoes, operacao em lote, tray e notificacoes nativas.",
+      "blocker": null,
+      "strategy": null
+    }
+  ],
+  "releases": [
+    {
+      "id": "working",
+      "status": "active",
+      "start_at": "2026-03-15 14:42 UTC"
+    }
+  ]
+}
