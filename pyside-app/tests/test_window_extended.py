@@ -1,7 +1,10 @@
 """Extended tests for app.window — covering business logic methods."""
+import sys
 import time
 import pytest
 from unittest.mock import patch, MagicMock
+
+win32_only = pytest.mark.skipif(sys.platform != 'win32', reason='Windows only')
 
 
 @pytest.fixture(autouse=True)
@@ -41,11 +44,13 @@ def test_until_tomorrow_minutes_max_is_1440(window):
 
 # ── _is_startup_enabled (lines 3248-3249) ─────────────────────────────────────
 
+@win32_only
 def test_is_startup_enabled_returns_bool(window):
     result = window._is_startup_enabled()
     assert isinstance(result, bool)
 
 
+@win32_only
 def test_is_startup_enabled_winreg_not_found(window):
     import winreg
     with patch('winreg.OpenKey', side_effect=FileNotFoundError('not found')):
@@ -53,6 +58,7 @@ def test_is_startup_enabled_winreg_not_found(window):
     assert result is False
 
 
+@win32_only
 def test_is_startup_enabled_winreg_success(window):
     with patch('winreg.OpenKey') as mock_open, \
          patch('winreg.QueryValueEx') as mock_query, \
@@ -64,6 +70,7 @@ def test_is_startup_enabled_winreg_success(window):
 
 # ── _set_startup (lines 3254-3271) ────────────────────────────────────────────
 
+@win32_only
 def test_set_startup_enable_calls_winreg(window):
     with patch('winreg.OpenKey') as mock_open, \
          patch('winreg.SetValueEx') as mock_set, \
@@ -73,6 +80,7 @@ def test_set_startup_enable_calls_winreg(window):
     mock_set.assert_called_once()
 
 
+@win32_only
 def test_set_startup_disable_calls_delete(window):
     mock_key = MagicMock()
     with patch('winreg.OpenKey', return_value=mock_key), \
@@ -82,12 +90,14 @@ def test_set_startup_disable_calls_delete(window):
     mock_del.assert_called_once()
 
 
+@win32_only
 def test_set_startup_handles_exception(window):
     with patch('winreg.OpenKey', side_effect=PermissionError('denied')):
         # Should not raise
         window._set_startup(True)
 
 
+@win32_only
 def test_set_startup_handles_delete_not_found(window):
     mock_key = MagicMock()
     with patch('winreg.OpenKey', return_value=mock_key), \

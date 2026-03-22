@@ -1,8 +1,11 @@
 """Centralized theme and color token system for Orbit."""
 from __future__ import annotations
-import winreg
+import sys
 from dataclasses import dataclass
 from typing import Literal
+
+if sys.platform == 'win32':
+    import winreg  # type: ignore[import]
 
 ThemeMode = Literal['dark', 'light', 'system']
 
@@ -32,6 +35,8 @@ def _alpha(hex_color: str, alpha_pct: int) -> str:
     return f'rgba({r},{g},{b},{a})'
 
 def _is_system_dark() -> bool:
+    if sys.platform != 'win32':
+        return True
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
             r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')

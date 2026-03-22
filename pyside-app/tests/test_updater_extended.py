@@ -161,7 +161,7 @@ def test_install_update_msi():
 def test_install_update_zip(tmp_path):
     from app.updater import install_update
     zip_path = str(tmp_path / 'orbit.zip')
-    with patch('os.startfile') as mock_startfile, \
+    with patch('os.startfile', create=True) as mock_startfile, \
          patch('PySide6.QtWidgets.QApplication.quit') as mock_quit:
         install_update(zip_path)
     mock_startfile.assert_called_once_with(str(tmp_path))
