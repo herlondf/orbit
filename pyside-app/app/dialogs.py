@@ -495,6 +495,17 @@ class ConfigDialog(QDialog):  # pragma: no cover
         form.addRow('', incognito_warn)
         self._incognito_cb.toggled.connect(incognito_warn.setVisible)
 
+        # ── Spellcheck row ──
+        self._spellcheck_cb = QCheckBox('Habilitar verificação ortográfica (en-US, pt-BR)')
+        self._spellcheck_cb.setChecked(getattr(service, 'spellcheck', True))
+        form.addRow('', self._spellcheck_cb)
+
+        # ── Tags row ──
+        self._tags_edit = QLineEdit()
+        self._tags_edit.setPlaceholderText('ex: trabalho, pessoal, produtividade')
+        self._tags_edit.setText(', '.join(getattr(service, 'tags', [])))
+        form.addRow('Tags', self._tags_edit)
+
         layout.addLayout(form)
 
         css_label = QLabel('CSS personalizado')
@@ -550,6 +561,9 @@ class ConfigDialog(QDialog):  # pragma: no cover
         service.notification_sound = self._sound_path
         service.proxy = self._proxy_edit.text().strip()
         service.incognito = self._incognito_cb.isChecked()
+        service.spellcheck = self._spellcheck_cb.isChecked()
+        raw_tags = self._tags_edit.text()
+        service.tags = [t.strip() for t in raw_tags.split(',') if t.strip()]
 
 
 # ── ConfirmDialog ──────────────────────────────────────────────────────────────

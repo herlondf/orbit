@@ -42,6 +42,10 @@ class Service:
     notification_sound: str = ''
     incognito: bool = False
     proxy: str = ''
+    enabled: bool = True          # Feature: enable/disable service
+    tags: List[str] = field(default_factory=list)   # Feature: service tags
+    spellcheck: bool = True       # Feature: per-service spellcheck toggle
+    preload: bool = False         # Feature: lazy-loading — preload on startup
 
 
 @dataclass

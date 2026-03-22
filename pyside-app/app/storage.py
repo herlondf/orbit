@@ -34,6 +34,10 @@ def _service_to_dict(svc: Service) -> dict:
         'notification_sound': svc.notification_sound,
         'incognito': svc.incognito,
         'proxy': svc.proxy,
+        'enabled': svc.enabled,
+        'tags': svc.tags,
+        'spellcheck': svc.spellcheck,
+        'preload': svc.preload,
         'accounts': [
             {
                 'id': a.id,
@@ -76,6 +80,10 @@ def _service_from_dict(s: dict) -> Service:
         notification_sound=s.get('notification_sound', ''),
         incognito=s.get('incognito', False),
         proxy=s.get('proxy', ''),
+        enabled=s.get('enabled', True),
+        tags=s.get('tags', []),
+        spellcheck=s.get('spellcheck', True),
+        preload=s.get('preload', False),
     )
 
 

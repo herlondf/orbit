@@ -150,7 +150,7 @@ class _StealthInterceptor(QWebEngineUrlRequestInterceptor):
 # ── profile factory ────────────────────────────────────────────────────────────
 
 def make_profile(profile_name: str, incognito: bool = False, proxy: str = '',
-                  service_type: str = '') -> QWebEngineProfile:
+                  service_type: str = '', spellcheck: bool = True) -> QWebEngineProfile:
     """
     Create a Chromium profile for one service account.
     If incognito=True, an off-the-record (in-memory) profile is used.
@@ -211,6 +211,13 @@ def make_profile(profile_name: str, incognito: bool = False, proxy: str = '',
         (QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled,            True),
     ]:
         s.setAttribute(attr, val)
+
+    # Spellcheck support
+    try:
+        profile.setSpellCheckEnabled(spellcheck)
+        profile.setSpellCheckLanguages(['en-US', 'pt-BR'])
+    except Exception:
+        pass  # Spellcheck may not be available in all builds
 
     return profile
 
@@ -356,13 +363,13 @@ class ServiceView(QWebEngineView):  # pragma: no cover
     badge_changed = Signal(int)
     load_status_changed = Signal(str)
 
-    def __init__(self, profile_name: str, url: str, service_type: str = '', custom_css: str = '', custom_js: str = '', zoom: float = 1.0, incognito: bool = False, parent=None):
+    def __init__(self, profile_name: str, url: str, service_type: str = '', custom_css: str = '', custom_js: str = '', zoom: float = 1.0, incognito: bool = False, spellcheck: bool = True, parent=None):
         super().__init__(parent)
         self.is_destroyed = False
         self._url = url
         self._status: str = 'idle'
 
-        self._profile = make_profile(profile_name, incognito=incognito, service_type=service_type)
+        self._profile = make_profile(profile_name, incognito=incognito, service_type=service_type, spellcheck=spellcheck)
 
         # Google blocks OAuth in embedded WebViews at the binary level.
         # Importing existing Chrome cookies lets the user skip the login entirely.

@@ -5,6 +5,23 @@ import os
 import sys
 from typing import Optional
 
+# ── Portable mode detection (before any app imports) ─────────────────────────
+_portable = '--portable' in sys.argv or os.environ.get('ORBIT_PORTABLE', '') == '1'
+if _portable:
+    _script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    _data_dir = os.path.join(_script_dir, 'orbit-data')
+    os.makedirs(_data_dir, exist_ok=True)
+    # Patch storage module paths before they are used
+    import app.storage as _storage_mod
+    _storage_mod.STORAGE_DIR = _data_dir
+    _storage_mod.STORAGE_FILE = os.path.join(_data_dir, 'workspace.json')
+    _storage_mod.PROFILES_DIR = os.path.join(_data_dir, 'profiles')
+    _storage_mod._WORKSPACES_FILE = os.path.join(_data_dir, 'workspaces.json')
+    _storage_mod._SETTINGS_FILE = os.path.join(_data_dir, 'settings.json')
+    import app.audit_log as _audit_mod
+    _audit_mod.set_log_path(os.path.join(_data_dir, 'audit.log'))
+    os.makedirs(_storage_mod.PROFILES_DIR, exist_ok=True)
+
 # Chromium flags — must be set before QApplication is created
 # --disable-blink-features=AutomationControlled removes navigator.webdriver
 # --no-first-run suppresses Chrome's first-run dialogs inside WebEngine
@@ -93,6 +110,9 @@ def main():
     splash = _show_splash(app)
 
     win = OrbitWindow()
+    if _portable:
+        from app.i18n import t
+        win.setWindowTitle(f'Orbit [{t("portable_mode")}]')
     win.show()
     splash.finish(win)
 

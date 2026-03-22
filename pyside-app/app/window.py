@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QKeySequence,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QPushButton,
@@ -72,6 +74,20 @@ from .lock_screen import LockScreen, hash_pin
 from .onboarding import OnboardingDialog
 from .hover_effect import apply_hover_effect
 from .toast import ToastManager
+from .focus_profiles import (
+    PROFILES as _FOCUS_PROFILES,
+    PROFILE_LABELS as _PROFILE_LABELS,
+    PROFILE_ORDER as _PROFILE_ORDER,
+    get_active_profile as _get_focus_profile,
+    set_active_profile as _set_focus_profile,
+    cycle_profile as _cycle_focus_profile,
+    is_service_muted_by_profile as _svc_muted_by_profile,
+    is_dnd_in_profile as _dnd_in_profile,
+    load_profile_from_settings as _load_focus_profile,
+    save_profile_to_settings as _save_focus_profile,
+)
+from .audit_log import log_event as _log_event
+from .i18n import t as _t, set_locale as _set_locale, available_locales as _available_locales
 
 # ── Theme system (delegates to app/theme.py) ─────────────────────────────────
 # ── Custom sidebar button ──────────────────────────────────────────────────────
@@ -513,6 +529,12 @@ class OrbitWindow(QMainWindow):
         # group header widgets tracked for cleanup
         self._group_header_widgets: list = []
 
+        # Lazy loading: track which service views have been initialized
+        self._loaded_services: set = set()
+
+        # Active tag filter (for tag chip clicking)
+        self._active_tag_filter: Optional[str] = None
+
         # DND state — must be before _setup_tray()
         self._dnd_until: Optional[float] = None
         self._dnd_check_timer = QTimer(self)
@@ -528,6 +550,10 @@ class OrbitWindow(QMainWindow):
         self._pip_windows: list = []
         self._notif_history_dlg = None
         self._privacy_mode: bool = False
+
+        # Load focus profile from settings
+        settings = load_settings()
+        _load_focus_profile(settings)
 
         self._setup_window()
         self._sidebar_compact: bool = load_settings().get('sidebar_compact', False)
@@ -602,6 +628,23 @@ class OrbitWindow(QMainWindow):
         if not load_settings().get('onboarding_done', False):
             QTimer.singleShot(200, self._show_onboarding)  # pragma: no cover
 
+        # ── Audit log: record startup ────────────────────────────────────────
+        _log_event('app_start')
+
+        # ── Clipboard guard ──────────────────────────────────────────────────
+        _cb_timeout = load_settings().get('clipboard_guard_timeout_ms', 30_000)
+        if _cb_timeout > 0:
+            try:
+                from .clipboard_guard import ClipboardGuard
+                self._clipboard_guard = ClipboardGuard(QApplication.instance(), _cb_timeout, self)
+                self._clipboard_guard.cleared.connect(
+                    lambda: ToastManager.show(self, _t('clipboard_cleared'), 'info')
+                )
+            except Exception:
+                self._clipboard_guard = None
+        else:
+            self._clipboard_guard = None
+
     def resizeEvent(self, event):  # pragma: no cover
         super().resizeEvent(event)
         if hasattr(self, '_lock_screen') and self._lock_screen and self._lock_screen.isVisible():
@@ -611,6 +654,13 @@ class OrbitWindow(QMainWindow):
     def eventFilter(self, obj, event):  # pragma: no cover
         if event.type() in (QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.KeyPress):
             self._last_activity = time.time()
+        # Close search bar on Escape
+        if event.type() == QEvent.KeyPress and hasattr(self, '_search_bar'):
+            if obj is self._search_bar:
+                from PySide6.QtGui import QKeyEvent
+                if event.key() == Qt.Key_Escape:
+                    self._hide_service_search()
+                    return True
         return super().eventFilter(obj, event)
 
     # ── window setup ─────────────────────────────────────────────────────────────
@@ -664,6 +714,16 @@ class OrbitWindow(QMainWindow):
         ai_sc = QShortcut(QKeySequence('Ctrl+Shift+A'), self)
         ai_sc.activated.connect(self._toggle_ai_sidebar)
         self._sc_objects['ai_sidebar'] = ai_sc
+
+        # Quick service search (Alt+S)
+        search_sc = QShortcut(QKeySequence('Alt+S'), self)
+        search_sc.activated.connect(self._show_service_search)
+        self._sc_objects['svc_search'] = search_sc
+
+        # Focus profile cycle (Ctrl+Shift+F)
+        focus_sc = QShortcut(QKeySequence('Ctrl+Shift+F'), self)
+        focus_sc.activated.connect(self._cycle_focus_profile)
+        self._sc_objects['focus_profile'] = focus_sc
 
     def _kbd_select_service(self, idx: int):  # pragma: no cover
         if idx < len(self._services):
@@ -753,6 +813,21 @@ class OrbitWindow(QMainWindow):
         _sep_top.setStyleSheet('background-color: #2e2e3d; border: none; margin: 2px 8px;')
         sb_layout.addWidget(_sep_top)
         sb_layout.addSpacing(4)
+
+        # ── Quick service search bar (hidden by default, Alt+S to show) ──────
+        self._search_bar = QLineEdit()
+        self._search_bar.setObjectName('svcSearchBar')
+        self._search_bar.setPlaceholderText(_t('search_services'))
+        self._search_bar.setVisible(False)
+        self._search_bar.setFixedHeight(28)
+        self._search_bar.setStyleSheet(
+            'QLineEdit { background:#2a2a3a; border:1px solid #3e3e52; '
+            'border-radius:6px; padding:2px 8px; color:#cdd6f4; font-size:12px; }'
+        )
+        self._search_bar.textChanged.connect(self._filter_sidebar_by_search)
+        self._search_bar.installEventFilter(self)
+        sb_layout.addWidget(self._search_bar)
+
         scroll = QScrollArea()
         scroll.setObjectName('svcScroll')
         scroll.setWidgetResizable(True)
@@ -1019,7 +1094,157 @@ class OrbitWindow(QMainWindow):
         if hasattr(self, '_privacy_overlay'):
             self._privacy_overlay.resize(self._stack.size())
 
-    # ── sidebar ───────────────────────────────────────────────────────────────
+    # ── quick search ──────────────────────────────────────────────────────────
+
+    def _show_service_search(self):  # pragma: no cover
+        """Show the sidebar search bar and focus it (Alt+S)."""
+        if not hasattr(self, '_search_bar'):
+            return
+        self._search_bar.setVisible(True)
+        self._search_bar.setFocus()
+        self._search_bar.selectAll()
+
+    def _hide_service_search(self):  # pragma: no cover
+        """Hide and clear the sidebar search bar."""
+        if not hasattr(self, '_search_bar'):
+            return
+        self._search_bar.clear()
+        self._search_bar.setVisible(False)
+        self._filter_sidebar_by_search('')
+
+    def _filter_sidebar_by_search(self, text: str):  # pragma: no cover
+        """Show/hide service buttons based on search text."""
+        query = text.strip().lower()
+        for svc_id, btn in self._svc_btns.items():
+            name = btn.service.name.lower()
+            btn.setVisible(not query or query in name)
+
+    # ── tag filter ────────────────────────────────────────────────────────────
+
+    def _toggle_tag_filter(self, tag: str):  # pragma: no cover
+        """Toggle filtering sidebar by a tag chip."""
+        if self._active_tag_filter == tag:
+            self._active_tag_filter = None
+        else:
+            self._active_tag_filter = tag
+        self._rebuild_sidebar()
+
+    # ── service enable/disable ────────────────────────────────────────────────
+
+    def _toggle_service_enabled(self, service: Service):  # pragma: no cover
+        """Enable or disable a service."""
+        service.enabled = not service.enabled
+        if not service.enabled:
+            # Unload views for this service
+            for acc in service.accounts:
+                key = (service.id, acc.id)
+                if key in self._views:
+                    view = self._views.pop(key)
+                    self._stack.removeWidget(view)
+                    view.deleteLater()
+            self._loaded_services.discard(service.id)
+            if self._active_service and self._active_service.id == service.id:
+                self._active_service = None
+                self._active_account = None
+                self._stack.setCurrentWidget(self._dashboard if self._services else self._welcome)
+                self._refresh_header()
+        else:
+            # Re-select to load it
+            self._select_service(service)
+        self._rebuild_sidebar()
+        self._save()
+
+    # ── focus profiles ────────────────────────────────────────────────────────
+
+    def _show_focus_profile_menu(self):  # pragma: no cover
+        """Show focus profile picker menu below the header button."""
+        menu = QMenu(self)
+        active = _get_focus_profile()
+        for p_key in _PROFILE_ORDER:
+            p_label = _PROFILE_LABELS.get(p_key, p_key)
+            act = menu.addAction(p_label)
+            act.setCheckable(True)
+            act.setChecked(p_key == active)
+            act.triggered.connect(lambda _, pk=p_key: self._set_focus_profile(pk))
+        if hasattr(self, '_focus_profile_btn'):
+            pos = self._focus_profile_btn.mapToGlobal(
+                self._focus_profile_btn.rect().bottomLeft()
+            )
+            menu.exec(pos)
+
+    def _cycle_focus_profile(self):  # pragma: no cover
+        """Cycle through focus profiles (Ctrl+Shift+F)."""
+        profile = _cycle_focus_profile()
+        settings = load_settings()
+        _save_focus_profile(settings)
+        save_settings(settings)
+        label = _PROFILE_LABELS.get(profile, profile)
+        ToastManager.show(self, f'Perfil: {label}', 'info')
+        self._update_focus_profile_ui()
+
+    def _set_focus_profile(self, profile: str):  # pragma: no cover
+        """Set a specific focus profile."""
+        _set_focus_profile(profile)
+        settings = load_settings()
+        _save_focus_profile(settings)
+        save_settings(settings)
+        self._update_focus_profile_ui()
+
+    def _update_focus_profile_ui(self):  # pragma: no cover
+        """Update the focus profile button and tray menu to reflect the active profile."""
+        profile = _get_focus_profile()
+        label = _PROFILE_LABELS.get(profile, profile)
+        if hasattr(self, '_focus_profile_btn'):
+            self._focus_profile_btn.setText(label)
+        if hasattr(self, '_tray_profile_actions'):
+            for p, act in self._tray_profile_actions.items():
+                act.setChecked(p == profile)
+        # Apply DND from profile
+        if _dnd_in_profile():
+            if self._dnd_until is None:
+                self._set_dnd(60 * 24)  # 24h DND for 'off' profile
+        else:
+            if self._dnd_until is not None:
+                self._set_dnd(None)
+
+    # ── audit log viewer ──────────────────────────────────────────────────────
+
+    def _show_audit_log(self):  # pragma: no cover
+        """Show the audit log in a dialog."""
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QTableWidget,
+                                        QTableWidgetItem, QDialogButtonBox, QLabel)
+        from .audit_log import get_events
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_t('audit_log'))
+        dlg.setMinimumSize(600, 400)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
+
+        title = QLabel(f'📋 {_t("audit_log")}')
+        title.setStyleSheet('font-size:14px; font-weight:bold;')
+        layout.addWidget(title)
+
+        events = get_events()
+        table = QTableWidget(len(events), 3)
+        table.setHorizontalHeaderLabels(['Timestamp', 'Event', 'Detail'])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+
+        for i, ev in enumerate(reversed(events)):
+            table.setItem(i, 0, QTableWidgetItem(ev.get('ts', '')))
+            table.setItem(i, 1, QTableWidgetItem(ev.get('event', '')))
+            table.setItem(i, 2, QTableWidgetItem(ev.get('detail', '')))
+
+        table.resizeColumnsToContents()
+        layout.addWidget(table, 1)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+        dlg.exec()
 
     def _rebuild_sidebar(self):  # pragma: no cover
         # Clear ALL widgets from the service layout (buttons + group headers + wrappers)
@@ -1040,6 +1265,10 @@ class OrbitWindow(QMainWindow):
             grouped_ids.update(g.service_ids)
 
         def _add_service_btn(svc: Service, indent: int = 0):
+            # Tag filter: hide if not matching active tag filter
+            if self._active_tag_filter and self._active_tag_filter not in getattr(svc, 'tags', []):
+                return
+
             btn = ServiceButton(svc, compact=self._sidebar_compact)
             if self._sidebar_compact:
                 btn.setToolTip(svc.name)
@@ -1053,7 +1282,18 @@ class OrbitWindow(QMainWindow):
                 cached = get_cached_pixmap(entry.favicon_url)
                 if cached:
                     btn.set_pixmap(cached)
-            btn.clicked.connect(lambda _, s=svc: self._select_service(s))
+
+            # Disabled service: grey out with opacity
+            if not getattr(svc, 'enabled', True):
+                effect = QGraphicsOpacityEffect(btn)
+                effect.setOpacity(0.4)
+                btn.setGraphicsEffect(effect)
+                btn.setToolTip(f'{svc.name} (desabilitado)')
+                # Disabled services: clicking re-enables instead of selecting
+                btn.clicked.connect(lambda _, s=svc: None)
+            else:
+                btn.clicked.connect(lambda _, s=svc: self._select_service(s))
+
             btn.setContextMenuPolicy(Qt.CustomContextMenu)
             btn.customContextMenuRequested.connect(
                 lambda pos, b=btn, s=svc: self._show_ctx_menu(s, b.mapToGlobal(pos))
@@ -1063,6 +1303,8 @@ class OrbitWindow(QMainWindow):
                     self._rich_tooltip.show_for(s, b.mapToGlobal(b.rect()).translated(b.width(), 0))
                     if is_hovered else self._rich_tooltip.hide()
             )
+
+            # Wrap and add to layout
             if indent > 0 and not self._sidebar_compact:
                 wrap = QWidget()
                 wrap_lay = QHBoxLayout(wrap)
@@ -1077,6 +1319,31 @@ class OrbitWindow(QMainWindow):
                 self._svc_layout.addWidget(btn)
             self._svc_btns[svc.id] = btn
             self._hover_anims.append(apply_hover_effect(btn, hover=1.0, normal=0.82))
+
+            # Tag chips — only in expanded mode
+            tags = getattr(svc, 'tags', [])
+            if tags and not self._sidebar_compact:
+                chips_widget = QWidget()
+                chips_layout = QHBoxLayout(chips_widget)
+                chips_layout.setContentsMargins(12, 0, 8, 2)
+                chips_layout.setSpacing(4)
+                chips_layout.addStretch()
+                for tag in tags:
+                    chip = QPushButton(tag)
+                    chip.setObjectName('tagChip')
+                    chip.setCursor(Qt.PointingHandCursor)
+                    chip.setFixedHeight(16)
+                    is_active_tag = (self._active_tag_filter == tag)
+                    bg = '#cba6f7' if is_active_tag else '#313244'
+                    fg = '#1e1e2e' if is_active_tag else '#a6adc8'
+                    chip.setStyleSheet(
+                        f'QPushButton {{ background:{bg}; color:{fg}; border-radius:8px; '
+                        f'font-size:9px; padding:0 6px; border:none; }}'
+                        f'QPushButton:hover {{ background:#45475a; }}'
+                    )
+                    chip.clicked.connect(lambda _, t=tag: self._toggle_tag_filter(t))
+                    chips_layout.addWidget(chip)
+                self._svc_layout.addWidget(chips_widget)
 
         # Render groups
         for group in groups:
@@ -1180,32 +1447,41 @@ class OrbitWindow(QMainWindow):
         settings['sidebar_compact'] = self._sidebar_compact
         save_settings(settings)
 
-        target_w = 68 if self._sidebar_compact else 160
+        target_w = 68 if self._sidebar_compact else 220
         start_w = self._splitter.sizes()[0]
-        steps = 12
-        delta = (target_w - start_w) / steps
-        self._compact_step = 0
-        self._compact_start = start_w
-        self._compact_delta = delta
-        self._compact_target = target_w
 
-        if hasattr(self, '_compact_timer') and self._compact_timer.isActive():
-            self._compact_timer.stop()
-        self._compact_timer = QTimer(self)
-        self._compact_timer.timeout.connect(self._animate_compact_step)
-        self._compact_timer.start(12)
+        # Use QPropertyAnimation on sidebar min/max width for smooth animation
+        if hasattr(self, '_compact_anim_min'):
+            self._compact_anim_min.stop()
+            self._compact_anim_max.stop()
 
-    def _animate_compact_step(self):  # pragma: no cover
-        self._compact_step += 1
-        w = int(self._compact_start + self._compact_delta * self._compact_step)
-        total = sum(self._splitter.sizes())
-        self._splitter.setSizes([w, total - w])
-        if self._compact_step >= 12:
-            self._compact_timer.stop()
+        self._compact_anim_min = QPropertyAnimation(self._sidebar, b'minimumWidth', self)
+        self._compact_anim_max = QPropertyAnimation(self._sidebar, b'maximumWidth', self)
+
+        for anim, start, end in [
+            (self._compact_anim_min, start_w, target_w),
+            (self._compact_anim_max, start_w, target_w),
+        ]:
+            anim.setDuration(200)
+            anim.setEasingCurve(QEasingCurve.InOutCubic)
+            anim.setStartValue(start)
+            anim.setEndValue(end)
+
+        def _on_compact_anim_done():
+            self._sidebar.setMinimumWidth(64)
+            self._sidebar.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
             total = sum(self._splitter.sizes())
-            self._splitter.setSizes([self._compact_target, total - self._compact_target])
+            self._splitter.setSizes([target_w, total - target_w])
             self._rebuild_sidebar()
             self._update_compact_btn()
+
+        self._compact_anim_max.finished.connect(_on_compact_anim_done)
+        self._compact_anim_min.start()
+        self._compact_anim_max.start()
+
+    def _animate_compact_step(self):  # pragma: no cover
+        """Legacy stub — kept for compatibility but no longer used."""
+        pass
 
     def _update_compact_btn(self):  # pragma: no cover
         if hasattr(self, '_compact_btn'):
@@ -1321,6 +1597,7 @@ class OrbitWindow(QMainWindow):
             self._glass_sidebar.setStyleSheet(
                 'QWidget#sidebar { background: transparent; border-right: none; }'
             )
+        _log_event('workspace_switched', ws.name)
 
     def _add_workspace(self):  # pragma: no cover
         from .models import new_id
@@ -1408,6 +1685,21 @@ class OrbitWindow(QMainWindow):
 
         self._header_layout.addStretch()
 
+        # Focus profile button
+        active_profile = _get_focus_profile()
+        profile_label = _PROFILE_LABELS.get(active_profile, active_profile)
+        self._focus_profile_btn = QPushButton(profile_label)
+        self._focus_profile_btn.setObjectName('hBtn')
+        self._focus_profile_btn.setFixedHeight(24)
+        self._focus_profile_btn.setMinimumWidth(70)
+        self._focus_profile_btn.setCursor(Qt.PointingHandCursor)
+        self._focus_profile_btn.setToolTip(f'{_t("focus_profile")} (Ctrl+Shift+F para ciclar)')
+        self._focus_profile_btn.setStyleSheet(
+            'QPushButton { font-size:10px; padding:0 6px; }'
+        )
+        self._focus_profile_btn.clicked.connect(self._show_focus_profile_menu)
+        self._header_layout.addWidget(self._focus_profile_btn)
+
         # Privacy mode button
         privacy_btn = QPushButton('👁')
         privacy_btn.setObjectName('hBtn')
@@ -1487,6 +1779,9 @@ class OrbitWindow(QMainWindow):
     # ── selection ─────────────────────────────────────────────────────────────
 
     def _select_service(self, service: Service):  # pragma: no cover
+        # Skip disabled services
+        if not getattr(service, 'enabled', True):
+            return
         # Record time on previous service
         if self._active_service and self._service_start_time:
             elapsed = time.time() - self._service_start_time
@@ -1542,12 +1837,15 @@ class OrbitWindow(QMainWindow):
             )
 
         if key not in self._views:
+            # Lazy loading: mark this service as loaded
+            self._loaded_services.add(self._active_service.id)
             view = ServiceView(account.profile_name, account.url,
                                service_type=self._active_service.service_type,
                                custom_css=self._active_service.custom_css,
                                custom_js=self._active_service.custom_js,
                                zoom=self._active_service.zoom,
-                               incognito=getattr(self._active_service, 'incognito', False))
+                               incognito=getattr(self._active_service, 'incognito', False),
+                               spellcheck=getattr(self._active_service, 'spellcheck', True))
             view.badge_changed.connect(
                 lambda count, svc=self._active_service: self._update_badge(svc, count)
             )
@@ -1589,7 +1887,10 @@ class OrbitWindow(QMainWindow):
         if count > prev and count > 0:
             add_notification(service.id, service.name, f'{service.name}: {count} mensagem(s)')
             is_active = self._active_service and self._active_service.id == service.id
-            if not is_active and hasattr(self, '_tray') and not self._is_dnd_active():
+            # Check focus profile muting
+            svc_tags = getattr(service, 'tags', [])
+            muted_by_profile = _svc_muted_by_profile(svc_tags)
+            if not is_active and hasattr(self, '_tray') and not self._is_dnd_active() and not muted_by_profile:
                 self._tray.showMessage(
                     service.name,
                     f'{count} mensagem(ns) não lida(s)',
@@ -1672,6 +1973,14 @@ class OrbitWindow(QMainWindow):
         open_win_act.setIcon(svg_icon('arrow-top-right-on-square', 14, '#6c7086'))
         pip_act = menu.addAction('Picture-in-Picture')
         pip_act.setIcon(svg_icon('rectangle-stack', 14, '#6c7086'))
+
+        # Enable / Disable service
+        menu.addSeparator()
+        is_enabled = getattr(service, 'enabled', True)
+        toggle_enabled_act = menu.addAction(
+            _t('disable_service') if is_enabled else _t('enable_service')
+        )
+        toggle_enabled_act.triggered.connect(lambda: self._toggle_service_enabled(service))
 
         is_google = any(t in service.service_type for t in _GOOGLE_TYPES)
         sync_act = None
@@ -1764,6 +2073,7 @@ class OrbitWindow(QMainWindow):
                 self._rebuild_sidebar()
                 self._select_service(svc)
                 self._save()
+                _log_event('service_added', svc.name)
 
     def _add_account(self):  # pragma: no cover
         if not self._active_service:
@@ -1797,6 +2107,7 @@ class OrbitWindow(QMainWindow):
                 if need_reselect and active_acc:
                     self._select_account(active_acc)
             self._save()
+            _log_event('config_changed', service.name)
 
     def _remove_service(self, service: Service):  # pragma: no cover
         dlg = ConfirmDialog(f'Remover "{service.name}" e todas as contas?', self)
@@ -1824,6 +2135,7 @@ class OrbitWindow(QMainWindow):
 
         self._rebuild_sidebar()
         self._save()
+        _log_event('service_removed', service.name)
 
         if self._services:
             self._select_service(self._services[0])
@@ -2414,6 +2726,21 @@ class OrbitWindow(QMainWindow):
         update_act.triggered.connect(lambda: self._check_updates(silent=False))
         tray_menu.addSeparator()
 
+        # Focus profile submenu
+        focus_menu = tray_menu.addMenu(f'🎯 {_t("focus_profile")}')
+        profile_group = QActionGroup(focus_menu)
+        profile_group.setExclusive(True)
+        self._tray_profile_actions: dict = {}
+        active_profile = _get_focus_profile()
+        for p_key in _PROFILE_ORDER:
+            p_label = _PROFILE_LABELS.get(p_key, p_key)
+            p_act = focus_menu.addAction(p_label)
+            p_act.setCheckable(True)
+            p_act.setChecked(p_key == active_profile)
+            p_act.triggered.connect(lambda _, pk=p_key: self._set_focus_profile(pk))
+            profile_group.addAction(p_act)
+            self._tray_profile_actions[p_key] = p_act
+
         # DND submenu
         dnd_menu = tray_menu.addMenu('Não perturbe')
         dnd_menu.setIcon(svg_icon('bell-slash', 14, '#6c7086'))
@@ -2437,6 +2764,8 @@ class OrbitWindow(QMainWindow):
         reading_list_act.triggered.connect(self._show_reading_list)
         ws_schedule_act = tray_menu.addAction('⏰ Agendamento de Workspace')
         ws_schedule_act.triggered.connect(self._show_workspace_schedule)
+        audit_act = tray_menu.addAction(f'📋 {_t("view_audit_log")}')
+        audit_act.triggered.connect(self._show_audit_log)
 
         tray_menu.addSeparator()
         backup_menu = tray_menu.addMenu('Backup')
@@ -2995,12 +3324,14 @@ class OrbitWindow(QMainWindow):
         if not self._lock_screen:
             self._lock_screen = LockScreen(pin_hash, self)
             self._lock_screen.unlocked.connect(self._lock_screen.hide)
+            self._lock_screen.unlocked.connect(lambda: _log_event('unlocked', 'pin'))
         else:
             self._lock_screen._pin_hash = pin_hash
         self._lock_screen.reset()
         self._lock_screen.setGeometry(self.rect())
         self._lock_screen.show()
         self._lock_screen.raise_()
+        _log_event('locked')
 
     def _show_shortcuts(self):  # pragma: no cover
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QScrollArea, QWidget, QGridLayout, QDialogButtonBox, QFrame
