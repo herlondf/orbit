@@ -175,7 +175,7 @@ def load_workspaces() -> List[Workspace]:
                 for w in data:
                     services = [_service_from_dict(s) for s in w.get('services', [])]
                     groups = [_group_from_dict(g) for g in w.get('groups', [])]
-                    result.append(Workspace(id=w['id'], name=w['name'], services=services, groups=groups, accent=w.get('accent', '')))
+                    result.append(Workspace(id=w['id'], name=w['name'], services=services, groups=groups, accent=w.get('accent', ''), bg_color=w.get('bg_color', '')))
                 if result:
                     return result
         except Exception:
@@ -194,6 +194,7 @@ def save_workspaces(workspaces: List[Workspace]) -> None:
             'id': ws.id,
             'name': ws.name,
             'accent': ws.accent,
+            'bg_color': ws.bg_color,
             'services': [_service_to_dict(svc) for svc in ws.services],
             'groups': [_group_to_dict(g) for g in ws.groups],
         }

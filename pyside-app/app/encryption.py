@@ -144,3 +144,54 @@ def hash_password(password: str) -> str:
 
 def verify_password_hash(password: str, stored_hash: str) -> bool:
     return hash_password(password) == stored_hash
+
+
+import sys as _sys
+import os as _os
+
+_DPAPI_KEY_FILE = _os.path.join(
+    _os.environ.get('APPDATA', _os.path.expanduser('~')), 'Orbit', 'dpapi.key'
+)
+
+
+def dpapi_protect(data: bytes) -> bytes:
+    """Protect bytes using Windows DPAPI. Returns unchanged on non-Windows."""
+    if _sys.platform != 'win32':
+        return data
+    try:
+        import win32crypt
+        return win32crypt.CryptProtectData(data, None, None, None, None, 0)
+    except Exception:
+        return data
+
+
+def dpapi_unprotect(data: bytes) -> bytes:
+    """Unprotect DPAPI-protected bytes. Returns unchanged on non-Windows."""
+    if _sys.platform != 'win32':
+        return data
+    try:
+        import win32crypt
+        _, plaintext = win32crypt.CryptUnprotectData(data, None, None, None, 0)
+        return plaintext
+    except Exception:
+        return data
+
+
+def save_dpapi_key(key: bytes) -> None:
+    """Save a key blob protected by DPAPI."""
+    protected = dpapi_protect(key)
+    _os.makedirs(_os.path.dirname(_DPAPI_KEY_FILE), exist_ok=True)
+    with open(_DPAPI_KEY_FILE, 'wb') as f:
+        f.write(protected)
+
+
+def load_dpapi_key() -> bytes | None:
+    """Load and unprotect a DPAPI key blob. Returns None if not found."""
+    if not _os.path.exists(_DPAPI_KEY_FILE):
+        return None
+    try:
+        with open(_DPAPI_KEY_FILE, 'rb') as f:
+            protected = f.read()
+        return dpapi_unprotect(protected)
+    except Exception:
+        return None

@@ -63,3 +63,4 @@ class Workspace:
     services: List[Service] = field(default_factory=list)
     groups: list = field(default_factory=list)  # list of ServiceGroup
     accent: str = ''  # hex color like '#7c6af7', empty = use global accent
+    bg_color: str = ''  # background color for content area, empty = default

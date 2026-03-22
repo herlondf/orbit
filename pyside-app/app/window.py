@@ -68,6 +68,10 @@ from .stats import record_session, get_weekly_totals, fmt_duration
 from .icons import IconFetcher, get_cached_pixmap, icon as svg_icon
 from .sounds import play_sound
 from .notif_history import load_history, add_notification, get_history, clear_history
+from .service_status import ServiceStatusChecker
+from .security_monitor import SecurityMonitor
+from .taskbar import update_badge
+from .notif_center import NotificationCenter
 from .quiet_hours import is_quiet_now
 from .dashboard import DashboardWidget
 from .lock_screen import LockScreen, hash_pin
@@ -251,6 +255,9 @@ class ServiceButton(QPushButton):  # pragma: no cover
             'loading': '#fab387',
             'ready': '#a6e3a1',
             'error': '#f38ba8',
+            'online': '#a6e3a1',
+            'slow': '#f9e2af',
+            'offline': '#f38ba8',
         }
         dot_color = _status_colors.get(self._status)
         if dot_color:
@@ -628,6 +635,33 @@ class OrbitWindow(QMainWindow):
         if not load_settings().get('onboarding_done', False):
             QTimer.singleShot(200, self._show_onboarding)  # pragma: no cover
 
+        # ── Security monitor ─────────────────────────────────────────────────
+        import sys as _sys
+        if load_settings().get('security_monitor', True) and _sys.platform == 'win32':
+            try:
+                self._security_monitor = SecurityMonitor(self)
+                self._security_monitor.threat_detected.connect(
+                    lambda desc: ToastManager.show(self, f'⚠ {desc}', 'warning')
+                )
+                self._security_monitor.start()
+            except Exception:
+                self._security_monitor = None
+        else:
+            self._security_monitor = None
+
+        # ── Service status checker ────────────────────────────────────────────
+        if load_settings().get('show_service_status', False):
+            try:
+                svc_urls = [(s.id, s.accounts[0].url if s.accounts else 'https://example.com')
+                            for s in self._services if s.accounts]
+                self._status_checker = ServiceStatusChecker(svc_urls, self)
+                self._status_checker.status_changed.connect(self._on_service_status_changed)
+                self._status_checker.start()
+            except Exception:
+                self._status_checker = None
+        else:
+            self._status_checker = None
+
         # ── Audit log: record startup ────────────────────────────────────────
         _log_event('app_start')
 
@@ -724,6 +758,11 @@ class OrbitWindow(QMainWindow):
         focus_sc = QShortcut(QKeySequence('Ctrl+Shift+F'), self)
         focus_sc.activated.connect(self._cycle_focus_profile)
         self._sc_objects['focus_profile'] = focus_sc
+
+        # Notification center (Ctrl+Shift+N)
+        notif_sc = QShortcut(QKeySequence('Ctrl+Shift+N'), self)
+        notif_sc.activated.connect(self._toggle_notif_center)
+        self._sc_objects['notif_center'] = notif_sc
 
     def _kbd_select_service(self, idx: int):  # pragma: no cover
         if idx < len(self._services):
@@ -889,6 +928,7 @@ class OrbitWindow(QMainWindow):
 
         # ── CONTENT AREA ───────────────────────────────────────────────────────
         content = QWidget()
+        self._content_widget = content
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
@@ -935,6 +975,9 @@ class OrbitWindow(QMainWindow):
         self._splitter.setSizes([saved_w, 1220, 0])
         self._splitter.splitterMoved.connect(self._on_splitter_moved)
         root.addWidget(self._splitter, 1)
+
+        # Notification center panel (overlay on right side of central)
+        self._notif_center = NotificationCenter(central, self._get_accent_color())
 
         self._rebuild_sidebar()
         self._update_workspace_btn()
@@ -1598,6 +1641,12 @@ class OrbitWindow(QMainWindow):
                 'QWidget#sidebar { background: transparent; border-right: none; }'
             )
         _log_event('workspace_switched', ws.name)
+        # Apply bg_color to content area
+        if hasattr(self, '_content_widget'):
+            if ws.bg_color:
+                self._content_widget.setStyleSheet(f'background: {ws.bg_color};')
+            else:
+                self._content_widget.setStyleSheet('')
 
     def _add_workspace(self):  # pragma: no cover
         from .models import new_id
@@ -1607,7 +1656,7 @@ class OrbitWindow(QMainWindow):
             return
         name = dlg.get_name()
         if name:
-            ws = Workspace(id=new_id('ws'), name=name, accent=dlg.get_accent())
+            ws = Workspace(id=new_id('ws'), name=name, accent=dlg.get_accent(), bg_color=dlg.get_bg_color())
             self._workspaces.append(ws)
             self._switch_workspace(ws)
             self._save()
@@ -1616,6 +1665,7 @@ class OrbitWindow(QMainWindow):
         dlg = EditWorkspaceDialog(
             name=self._active_workspace.name,
             accent=self._active_workspace.accent,
+            bg_color=self._active_workspace.bg_color,
             parent=self,
         )
         dlg.setWindowTitle('Editar workspace')
@@ -1625,6 +1675,7 @@ class OrbitWindow(QMainWindow):
         if name:
             self._active_workspace.name = name
             self._active_workspace.accent = dlg.get_accent()
+            self._active_workspace.bg_color = dlg.get_bg_color()
             self._update_workspace_btn()
             # Re-apply accent for the active workspace
             global_accent = ACCENTS.get(self._accent, ACCENTS['Iris'])
@@ -1925,6 +1976,12 @@ class OrbitWindow(QMainWindow):
             else:
                 self._tray.setToolTip('Orbit')
         self._update_tray_badge()
+        try:
+            total = sum(getattr(s, 'unread', 0) for s in self._services)
+            hwnd = int(self.winId())
+            update_badge(hwnd, total)
+        except Exception:
+            pass
         self._update_title()
 
     def _update_tray_badge(self):  # pragma: no cover
@@ -2258,6 +2315,115 @@ class OrbitWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, 'Orbit', f'Erro ao importar: {e}')
             ToastManager.show(self, f'Erro ao importar: {e}', 'error')
+
+    def _toggle_notif_center(self):  # pragma: no cover
+        if hasattr(self, '_notif_center'):
+            self._notif_center.toggle()
+
+    def _on_service_status_changed(self, svc_id: str, status: str):  # pragma: no cover
+        btn = self._svc_btns.get(svc_id)
+        if btn:
+            btn.set_status(status)
+
+    def _get_accent_color(self) -> str:  # pragma: no cover
+        ws = getattr(self, '_active_workspace', None)
+        if ws and ws.accent:
+            return ws.accent
+        return ACCENTS.get(getattr(self, '_accent', 'Iris'), ACCENTS['Iris'])
+
+    def _show_webdav_dialog(self):  # pragma: no cover
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
+                                        QPushButton, QLabel, QHBoxLayout, QDialogButtonBox)
+        from .webdav_sync import get_webdav, save_webdav_config, load_webdav_config
+        cfg = load_webdav_config()
+        dlg = QDialog(self)
+        dlg.setWindowTitle('🗄️ WebDAV / OneDrive Sync')
+        dlg.setMinimumWidth(460)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        title = QLabel('🗄️ Sincronização WebDAV')
+        title.setStyleSheet('font-size:15px; font-weight:bold;')
+        layout.addWidget(title)
+
+        hint = QLabel(
+            'Configure o servidor WebDAV para fazer backup automático.<br>'
+            'Compatível com Nextcloud, ownCloud, OneDrive (WebDAV), etc.'
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet('font-size:11px; color:#6c7086;')
+        layout.addWidget(hint)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        url_edit = QLineEdit(cfg.get('url', ''))
+        url_edit.setPlaceholderText('https://seu-servidor/webdav/')
+        form.addRow('URL WebDAV', url_edit)
+        user_edit = QLineEdit(cfg.get('username', ''))
+        user_edit.setPlaceholderText('usuário')
+        form.addRow('Usuário', user_edit)
+        pass_edit = QLineEdit(cfg.get('password', ''))
+        pass_edit.setPlaceholderText('senha')
+        pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow('Senha', pass_edit)
+        layout.addLayout(form)
+
+        status_lbl = QLabel('')
+        status_lbl.setWordWrap(True)
+        status_lbl.setStyleSheet('font-size:12px;')
+        layout.addWidget(status_lbl)
+
+        btn_row = QHBoxLayout()
+        test_btn = QPushButton('🔌 Testar conexão')
+        test_btn.setObjectName('secondaryButton')
+        upload_btn = QPushButton('☁️ Fazer backup agora')
+        upload_btn.setObjectName('primaryButton')
+        btn_row.addWidget(test_btn)
+        btn_row.addWidget(upload_btn)
+        layout.addLayout(btn_row)
+
+        close_btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_btns.rejected.connect(dlg.reject)
+        layout.addWidget(close_btns)
+
+        def save_and_test():
+            url = url_edit.text().strip()
+            user = user_edit.text().strip()
+            pw = pass_edit.text()
+            if not url:
+                status_lbl.setText('⚠ URL é obrigatória.')
+                return
+            save_webdav_config(url, user, pw)
+            wd = get_webdav()
+            wd.configure(url, user, pw)
+            status_lbl.setText('⏳ Testando...')
+            dlg.repaint()
+            ok, msg = wd.test_connection()
+            status_lbl.setText(f'{"✅" if ok else "❌"} {msg}')
+
+        def do_backup():
+            url = url_edit.text().strip()
+            user = user_edit.text().strip()
+            pw = pass_edit.text()
+            if not url:
+                status_lbl.setText('⚠ URL é obrigatória.')
+                return
+            save_webdav_config(url, user, pw)
+            wd = get_webdav()
+            wd.configure(url, user, pw)
+            import json as _json
+            from .storage import load_settings as _ls
+            backup_data = _json.dumps({'settings': _ls()}).encode('utf-8')
+            fname = wd.backup_filename()
+            status_lbl.setText('⏳ Enviando...')
+            dlg.repaint()
+            ok = wd.upload_data(fname, backup_data)
+            status_lbl.setText('✅ Backup enviado!' if ok else '❌ Falha ao enviar backup.')
+
+        test_btn.clicked.connect(save_and_test)
+        upload_btn.clicked.connect(do_backup)
+        dlg.exec()
 
     def _show_cloud_sync_dialog(self):  # pragma: no cover
         import threading
@@ -2779,6 +2945,9 @@ class OrbitWindow(QMainWindow):
         cloud_act = tray_menu.addAction('Sincronização na nuvem...')
         cloud_act.setIcon(svg_icon('cloud-arrow-up', 14, '#6c7086'))
         cloud_act.triggered.connect(self._show_cloud_sync_dialog)
+        webdav_act = tray_menu.addAction('WebDAV / OneDrive...')
+        webdav_act.setIcon(svg_icon('server', 14, '#6c7086'))
+        webdav_act.triggered.connect(self._show_webdav_dialog)
         rambox_act = tray_menu.addAction('Importar do Rambox/Ferdium...')
         rambox_act.setIcon(svg_icon('arrow-down-tray', 14, '#6c7086'))
         rambox_act.triggered.connect(self._show_import_dialog)

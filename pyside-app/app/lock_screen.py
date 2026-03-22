@@ -1,8 +1,9 @@
 import hashlib
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel,
     QPushButton, QGridLayout)
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
+from .biometric import WindowsHello
 
 
 class LockScreen(QWidget):
@@ -59,6 +60,21 @@ class LockScreen(QWidget):
             grid.addWidget(btn, i // 3, i % 3)
         layout.addWidget(grid_w, 0, Qt.AlignCenter)
 
+        # Windows Hello button (shown only if available)
+        self._hello_btn = QPushButton('🪟 Windows Hello')
+        self._hello_btn.setFixedHeight(36)
+        self._hello_btn.setStyleSheet(
+            'background: #313244; color: #cdd6f4; border: 1px solid #45475a; '
+            'border-radius: 8px; font-size: 13px; padding: 0 16px;'
+        )
+        self._hello_btn.setCursor(Qt.PointingHandCursor)
+        self._hello_btn.setVisible(False)
+        self._hello_btn.clicked.connect(self._try_windows_hello)
+        layout.addWidget(self._hello_btn, 0, Qt.AlignCenter)
+
+        # Check Windows Hello availability asynchronously
+        QTimer.singleShot(500, self._check_hello_availability)
+
     def _update_dots(self):
         filled = '● ' * len(self._entry)
         empty = '○ ' * (4 - len(self._entry))
@@ -89,6 +105,20 @@ class LockScreen(QWidget):
         self._entry = ''
         self._error.setText('')
         self._update_dots()
+
+    def _check_hello_availability(self):  # pragma: no cover
+        try:
+            if WindowsHello.is_available():
+                self._hello_btn.setVisible(True)
+        except Exception:
+            pass
+
+    def _try_windows_hello(self):  # pragma: no cover
+        try:
+            if WindowsHello.verify('Desbloquear Orbit'):
+                self.unlocked.emit()
+        except Exception:
+            pass
 
 
 def hash_pin(pin: str) -> str:

@@ -599,12 +599,13 @@ class ConfirmDialog(QDialog):  # pragma: no cover
 class EditWorkspaceDialog(QDialog):  # pragma: no cover
     """Dialog for creating or editing a workspace (name + accent color)."""
 
-    def __init__(self, name: str = '', accent: str = '', parent=None):
+    def __init__(self, name: str = '', accent: str = '', bg_color: str = '', parent=None):
         super().__init__(parent)
         self.setWindowTitle('Workspace')
         self.setModal(True)
         self.setMinimumWidth(360)
         self._accent = accent
+        self._bg_color = bg_color
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -644,6 +645,35 @@ class EditWorkspaceDialog(QDialog):  # pragma: no cover
         color_layout.addWidget(clear_btn)
 
         form.addRow('Cor do workspace', color_widget)
+
+        # Background color picker
+        bg_widget = QWidget()
+        bg_layout = QHBoxLayout(bg_widget)
+        bg_layout.setContentsMargins(0, 0, 0, 0)
+        bg_layout.setSpacing(8)
+
+        self._bg_color_btn = QPushButton()
+        self._bg_color_btn.setFixedSize(32, 24)
+        self._bg_color_btn.setCursor(Qt.PointingHandCursor)
+        self._bg_color_btn.setToolTip('Escolher cor de fundo do workspace')
+        self._bg_color_btn.clicked.connect(self._pick_bg_color)
+        self._update_bg_color_btn()
+
+        self._bg_color_label = QLabel(bg_color if bg_color else '(padrão)')
+        self._bg_color_label.setStyleSheet('color: #6c7086; font-size: 11px;')
+
+        clear_bg_btn = QPushButton('✕ Limpar')
+        clear_bg_btn.setObjectName('secondaryButton')
+        clear_bg_btn.setFixedHeight(24)
+        clear_bg_btn.setCursor(Qt.PointingHandCursor)
+        clear_bg_btn.clicked.connect(self._clear_bg_color)
+
+        bg_layout.addWidget(self._bg_color_btn)
+        bg_layout.addWidget(self._bg_color_label)
+        bg_layout.addStretch()
+        bg_layout.addWidget(clear_bg_btn)
+
+        form.addRow('Cor de fundo', bg_widget)
         layout.addLayout(form)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
@@ -680,6 +710,33 @@ class EditWorkspaceDialog(QDialog):  # pragma: no cover
             self._color_btn.setStyleSheet(
                 'background: #2a2a3a; border: 1px solid #444; border-radius: 4px;'
             )
+
+    def _pick_bg_color(self):
+        from PySide6.QtWidgets import QColorDialog
+        current = QColor(self._bg_color) if self._bg_color else QColor('#1e1e2e')
+        color = QColorDialog.getColor(current, self, 'Escolher cor de fundo')
+        if color.isValid():
+            self._bg_color = color.name()
+            self._update_bg_color_btn()
+            self._bg_color_label.setText(self._bg_color)
+
+    def _clear_bg_color(self):
+        self._bg_color = ''
+        self._update_bg_color_btn()
+        self._bg_color_label.setText('(padrão)')
+
+    def _update_bg_color_btn(self):
+        if self._bg_color:
+            self._bg_color_btn.setStyleSheet(
+                f'background: {self._bg_color}; border: 1px solid #444; border-radius: 4px;'
+            )
+        else:
+            self._bg_color_btn.setStyleSheet(
+                'background: #2a2a3a; border: 1px solid #444; border-radius: 4px;'
+            )
+
+    def get_bg_color(self) -> str:
+        return self._bg_color
 
     def _on_accept(self):
         if not self._name_edit.text().strip():
