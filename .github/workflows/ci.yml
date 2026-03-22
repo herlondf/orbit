@@ -22,6 +22,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: pyside-app/requirements.txt
       - run: pip install ruff
       - name: Ruff lint (errors only)
         run: ruff check pyside-app/ --select=F --ignore=F401,F841 --exit-zero
@@ -40,6 +41,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: pyside-app/requirements.txt
 
       - name: Install Qt deps (Linux)
         if: runner.os == 'Linux'
@@ -80,6 +82,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: pyside-app/requirements.txt
       - run: pip install -r pyside-app/requirements.txt pyinstaller cryptography
       - name: PyInstaller smoke test
         working-directory: pyside-app
