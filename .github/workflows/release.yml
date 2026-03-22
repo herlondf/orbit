@@ -1,0 +1,199 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.12"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ── Extract version + changelog ────────────────────────────────────
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changelog: ${{ steps.changelog.outputs.changelog }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          changelog=$(awk "/^## \[${version}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md 2>/dev/null || echo "")
+          if [ -z "$changelog" ]; then
+            prev_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [ -n "$prev_tag" ]; then
+              changelog=$(git log --pretty=format:"- %s" "${prev_tag}..HEAD" --no-merges)
+            else
+              changelog=$(git log --pretty=format:"- %s" -20 --no-merges)
+            fi
+          fi
+          {
+            echo "changelog<<CHANGELOG_EOF"
+            echo "$changelog"
+            echo "CHANGELOG_EOF"
+          } >> $GITHUB_OUTPUT
+
+  # ── Build Windows installers ───────────────────────────────────────
+  build-windows:
+    name: Build Windows (x64)
+    runs-on: windows-latest
+    needs: [prepare]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: x64
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r pyside-app/requirements.txt pyinstaller cryptography
+
+      - name: Stamp version into updater.py
+        shell: bash
+        run: |
+          version="${{ needs.prepare.outputs.version }}"
+          sed -i "s/^APP_VERSION = .*/APP_VERSION = '${version}'/" pyside-app/app/updater.py
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onedir --name Orbit --noconsole `
+            --workpath build --distpath dist `
+            --add-data "pyside-app\assets;assets" `
+            --add-data "pyside-app\resources;resources" `
+            --hidden-import PySide6.QtSvg `
+            --hidden-import PySide6.QtSvgWidgets `
+            --hidden-import PySide6.QtWebEngineCore `
+            --hidden-import PySide6.QtWebEngineWidgets `
+            --hidden-import PySide6.QtMultimedia `
+            --hidden-import cryptography `
+            --hidden-import cryptography.hazmat.primitives.ciphers.aead `
+            --hidden-import cryptography.hazmat.primitives.kdf.pbkdf2 `
+            pyside-app\main.py
+
+      - name: Create update manifest (latest.json)
+        shell: bash
+        run: |
+          version="${{ needs.prepare.outputs.version }}"
+          repo="${{ github.repository }}"
+          base="https://github.com/${repo}/releases/download/v${version}"
+          cat > dist/Orbit/latest.json <<MANIFEST
+          {
+            "version": "${version}",
+            "channel": "stable",
+            "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "release_url": "https://github.com/${repo}/releases/tag/v${version}",
+            "assets": {
+              "win-x64-zip":  "${base}/Orbit-${version}-win-x64.zip",
+              "win-x64-msi":  "${base}/Orbit-${version}-win-x64.msi",
+              "win-x64-msix": "${base}/Orbit-${version}-win-x64.msix"
+            },
+            "changelog_url": "https://github.com/${repo}/blob/main/CHANGELOG.md"
+          }
+          MANIFEST
+
+      - name: Package ZIP
+        shell: pwsh
+        run: |
+          $version = "${{ needs.prepare.outputs.version }}"
+          Compress-Archive -Path "dist\Orbit\*" -DestinationPath "Orbit-${version}-win-x64.zip"
+
+      - name: Build MSI (WiX v4)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          dotnet tool install --global wix 2>$null; $null
+          if (Get-Command wix -ErrorAction SilentlyContinue) {
+            & powershell -File installer\build_msi.ps1 -Version "${{ needs.prepare.outputs.version }}"
+            if (Test-Path "dist\Orbit-Setup.msi") {
+              $version = "${{ needs.prepare.outputs.version }}"
+              Move-Item "dist\Orbit-Setup.msi" "Orbit-${version}-win-x64.msi"
+            }
+          } else {
+            Write-Host "WiX not available — skipping MSI" -ForegroundColor Yellow
+          }
+
+      - name: Build MSIX
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          & powershell -File installer\build_msix.ps1
+          if (Test-Path "dist\Orbit-Setup.msix") {
+            $version = "${{ needs.prepare.outputs.version }}"
+            Move-Item "dist\Orbit-Setup.msix" "Orbit-${version}-win-x64.msix"
+          }
+
+      - name: Copy update manifest to release root
+        shell: pwsh
+        run: |
+          if (Test-Path "dist\Orbit\latest.json") {
+            Copy-Item "dist\Orbit\latest.json" "latest.json"
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            Orbit-*.zip
+            Orbit-*.msi
+            Orbit-*.msix
+            latest.json
+
+  # ── Create GitHub Release ──────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [prepare, build-windows]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: List release files
+        run: ls -la artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Orbit v${{ needs.prepare.outputs.version }}"
+          body: |
+            ## What's New in v${{ needs.prepare.outputs.version }}
+
+            ${{ needs.prepare.outputs.changelog }}
+
+            ---
+
+            ### Downloads
+
+            | File | Description |
+            |------|-------------|
+            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.zip` | Portable — unzip and run |
+            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.msi` | MSI Installer (Windows 10+) |
+            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.msix` | MSIX (Windows 11) |
+            | `latest.json` | Update manifest |
+
+            ### Update from the app
+            Orbit will notify you of this update automatically.
+            Go to **Help → Check for Updates** to update now.
+          files: artifacts/*
+          fail_on_unmatched_files: false

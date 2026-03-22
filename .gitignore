@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+.ruff_cache/
+*.egg-info/
+
+# Build artifacts
+build/
+dist/
+*.spec.bak
+
+# PyInstaller
+/pyside-app/build/
+/pyside-app/dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Packaging
+/dist/
+/installer/*.msi
+/installer/*.msix
+/installer/*.pfx
+/installer/*.wxs
+/installer/DistFiles.wxs
+
+# User data
+*.json.bak
+
+# Secrets
+*.pfx
+*.pem
+*.key
