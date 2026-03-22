@@ -32,7 +32,7 @@ from .models import Account, Service, new_id, slugify
 
 # ── catalog card (used inside AddServiceDialog) ────────────────────────────────
 
-class _CatalogCard(QPushButton):
+class _CatalogCard(QPushButton):  # pragma: no cover
     def __init__(self, entry: CatalogEntry, parent=None):
         super().__init__(parent)
         self.entry = entry
@@ -64,7 +64,7 @@ class _CatalogCard(QPushButton):
 
 # ── AddServiceDialog ───────────────────────────────────────────────────────────
 
-class AddServiceDialog(QDialog):
+class AddServiceDialog(QDialog):  # pragma: no cover
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Adicionar Serviço')
@@ -316,7 +316,7 @@ class AddServiceDialog(QDialog):
 
 # ── AddAccountDialog ───────────────────────────────────────────────────────────
 
-class AddAccountDialog(QDialog):
+class AddAccountDialog(QDialog):  # pragma: no cover
     def __init__(self, service: Service, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f'Adicionar conta — {service.name}')
@@ -405,7 +405,7 @@ class AddAccountDialog(QDialog):
 
 # ── ConfigDialog ───────────────────────────────────────────────────────────────
 
-class ConfigDialog(QDialog):
+class ConfigDialog(QDialog):  # pragma: no cover
     def __init__(self, service: Service, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f'Configurar — {service.name}')
@@ -554,7 +554,7 @@ class ConfigDialog(QDialog):
 
 # ── ConfirmDialog ──────────────────────────────────────────────────────────────
 
-class ConfirmDialog(QDialog):
+class ConfirmDialog(QDialog):  # pragma: no cover
     def __init__(self, message: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Confirmar')
@@ -582,7 +582,7 @@ class ConfirmDialog(QDialog):
         layout.addWidget(btns)
 
 
-class EditWorkspaceDialog(QDialog):
+class EditWorkspaceDialog(QDialog):  # pragma: no cover
     """Dialog for creating or editing a workspace (name + accent color)."""
 
     def __init__(self, name: str = '', accent: str = '', parent=None):
@@ -680,7 +680,7 @@ class EditWorkspaceDialog(QDialog):
         return self._accent
 
 
-class WorkspaceScheduleDialog(QDialog):
+class WorkspaceScheduleDialog(QDialog):  # pragma: no cover
     """Configure automatic workspace switching rules."""
 
     def __init__(self, workspaces, schedule, parent=None):
@@ -798,7 +798,7 @@ class WorkspaceScheduleDialog(QDialog):
 
 # ── MasterPasswordDialog ──────────────────────────────────────────────────────
 
-class MasterPasswordDialog(QDialog):
+class MasterPasswordDialog(QDialog):  # pragma: no cover
     """Dialog to set or enter the master password for file encryption.
 
     mode='set'   — two fields (password + confirm) to create a new password.

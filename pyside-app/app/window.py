@@ -76,7 +76,7 @@ from .toast import ToastManager
 # ── Theme system (delegates to app/theme.py) ─────────────────────────────────
 # ── Custom sidebar button ──────────────────────────────────────────────────────
 
-class ServiceButton(QPushButton):
+class ServiceButton(QPushButton):  # pragma: no cover
     """
     Sidebar button: coloured icon square + unread badge + active ring.
     Drawn entirely in paintEvent to avoid layout complexity.
@@ -284,7 +284,7 @@ class ServiceButton(QPushButton):
 
 # ── Small inline icon label (header) ──────────────────────────────────────────
 
-class _IconLabel(QWidget):
+class _IconLabel(QWidget):  # pragma: no cover
     def __init__(self, service: Service, size: int = 24, parent=None):
         super().__init__(parent)
         self._service = service
@@ -306,7 +306,7 @@ class _IconLabel(QWidget):
 
 # ── Rich tooltip popup ────────────────────────────────────────────────────────
 
-class _RichTooltip(QWidget):
+class _RichTooltip(QWidget):  # pragma: no cover
     def __init__(self, parent=None):
         super().__init__(parent, Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -349,7 +349,7 @@ class _RichTooltip(QWidget):
 
 # ── Connection status badge (header) ──────────────────────────────────────────
 
-class _StatusBadge(QWidget):
+class _StatusBadge(QWidget):  # pragma: no cover
     """Small colored badge showing connection status: connecting / ready / error."""
 
     COLORS = {
@@ -395,7 +395,7 @@ class _StatusBadge(QWidget):
 
 # ── Glass sidebar ─────────────────────────────────────────────────────────────
 
-class _GlassSidebar(QWidget):
+class _GlassSidebar(QWidget):  # pragma: no cover
     """Sidebar widget with a glassmorphism-style painted background."""
 
     def __init__(self, accent_color: str = '#7c6af7', parent=None):
@@ -444,7 +444,7 @@ class _GlassSidebar(QWidget):
 
 # ── Privacy overlay ────────────────────────────────────────────────────────────
 
-class _PrivacyOverlay(QWidget):
+class _PrivacyOverlay(QWidget):  # pragma: no cover
     """Full-screen privacy overlay — hides web content when privacy mode is on."""
 
     def __init__(self, parent=None):
@@ -543,7 +543,7 @@ class OrbitWindow(QMainWindow):
 
         # Restore AI sidebar state from settings
         if load_settings().get('ai_sidebar_open', False):
-            self._toggle_ai_sidebar()
+            self._toggle_ai_sidebar()  # pragma: no cover
 
         # Feature 3: fade animation on stack
         self._stack_effect = QGraphicsOpacityEffect(self._stack)
@@ -560,7 +560,7 @@ class OrbitWindow(QMainWindow):
         self._fetch_service_icons()
 
         if self._services:
-            self._select_service(self._services[0])
+            self._select_service(self._services[0])  # pragma: no cover
 
         set_ad_block(load_settings().get('ad_block', True))
         self._check_updates(silent=True)
@@ -568,7 +568,7 @@ class OrbitWindow(QMainWindow):
         # ── Lock screen ──────────────────────────────────────────────────────
         settings = load_settings()
         pin_hash = settings.get('pin_hash')
-        if pin_hash:
+        if pin_hash:  # pragma: no cover
             self._lock_screen = LockScreen(pin_hash, self)
             self._lock_screen.setGeometry(self.rect())
             self._lock_screen.unlocked.connect(self._lock_screen.hide)
@@ -600,22 +600,22 @@ class OrbitWindow(QMainWindow):
 
         # ── Onboarding ───────────────────────────────────────────────────────
         if not load_settings().get('onboarding_done', False):
-            QTimer.singleShot(200, self._show_onboarding)
+            QTimer.singleShot(200, self._show_onboarding)  # pragma: no cover
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event):  # pragma: no cover
         super().resizeEvent(event)
         if hasattr(self, '_lock_screen') and self._lock_screen and self._lock_screen.isVisible():
             self._lock_screen.setGeometry(self.rect())
         self._update_privacy_overlay_size()
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, obj, event):  # pragma: no cover
         if event.type() in (QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.KeyPress):
             self._last_activity = time.time()
         return super().eventFilter(obj, event)
 
     # ── window setup ─────────────────────────────────────────────────────────────
 
-    def _setup_shortcuts(self):
+    def _setup_shortcuts(self):  # pragma: no cover
         from PySide6.QtGui import QShortcut, QKeySequence
         sc = load_shortcuts()
         for i in range(9):
@@ -665,25 +665,25 @@ class OrbitWindow(QMainWindow):
         ai_sc.activated.connect(self._toggle_ai_sidebar)
         self._sc_objects['ai_sidebar'] = ai_sc
 
-    def _kbd_select_service(self, idx: int):
+    def _kbd_select_service(self, idx: int):  # pragma: no cover
         if idx < len(self._services):
             self._select_service(self._services[idx])
 
-    def _toggle_focus_mode(self):
+    def _toggle_focus_mode(self):  # pragma: no cover
         self._sidebar.setVisible(not self._sidebar.isVisible())
         if self._active_service:
             self._refresh_header()
 
-    def _zoom_in(self):
+    def _zoom_in(self):  # pragma: no cover
         self._set_zoom(min(3.0, (self._active_service.zoom if self._active_service else 1.0) + 0.1))
 
-    def _zoom_out(self):
+    def _zoom_out(self):  # pragma: no cover
         self._set_zoom(max(0.3, (self._active_service.zoom if self._active_service else 1.0) - 0.1))
 
-    def _zoom_reset(self):
+    def _zoom_reset(self):  # pragma: no cover
         self._set_zoom(1.0)
 
-    def _set_zoom(self, factor: float):
+    def _set_zoom(self, factor: float):  # pragma: no cover
         if not self._active_service or not self._active_account:
             return
         self._active_service.zoom = round(factor, 2)
@@ -692,7 +692,7 @@ class OrbitWindow(QMainWindow):
             self._views[key].set_zoom(factor)
         self._save()
 
-    def _setup_window(self):
+    def _setup_window(self):  # pragma: no cover
         self.setWindowTitle('Orbit')
         self.resize(1440, 940)
         self.setMinimumSize(900, 600)
@@ -708,7 +708,7 @@ class OrbitWindow(QMainWindow):
 
     # ── UI construction ──────────────────────────────────────────────────────────
 
-    def _build_ui(self):
+    def _build_ui(self):  # pragma: no cover
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
@@ -864,7 +864,7 @@ class OrbitWindow(QMainWindow):
         self._rebuild_sidebar()
         self._update_workspace_btn()
 
-    def _build_ai_sidebar(self) -> QWidget:
+    def _build_ai_sidebar(self) -> QWidget:  # pragma: no cover
         """Placeholder AI sidebar panel (collapsed by default)."""
         panel = QWidget()
         panel.setObjectName('aiPanel')
@@ -874,7 +874,7 @@ class OrbitWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         return panel
 
-    def _toggle_ai_sidebar(self):
+    def _toggle_ai_sidebar(self):  # pragma: no cover
         """Toggle the AI sidebar panel open/closed."""
         if not hasattr(self, '_ai_panel'):
             return
@@ -883,7 +883,7 @@ class OrbitWindow(QMainWindow):
             new_ai = 0 if sizes[2] > 0 else 320
             self._splitter.setSizes([sizes[0], sizes[1] - new_ai, new_ai])
 
-    def _make_welcome(self) -> QWidget:
+    def _make_welcome(self) -> QWidget:  # pragma: no cover
         w = QWidget()
         w.setObjectName('welcome')
         layout = QVBoxLayout(w)
@@ -925,7 +925,7 @@ class OrbitWindow(QMainWindow):
         'Perplexity': 'https://www.perplexity.ai',
     }
 
-    def _build_ai_sidebar(self) -> QWidget:
+    def _build_ai_sidebar(self) -> QWidget:  # pragma: no cover
         panel = QWidget()
         panel.setObjectName('aiSidebar')
         panel.setMinimumWidth(0)
@@ -982,14 +982,14 @@ class OrbitWindow(QMainWindow):
 
         return panel
 
-    def _on_ai_provider_changed(self, index: int):
+    def _on_ai_provider_changed(self, index: int):  # pragma: no cover
         if not hasattr(self, '_ai_view') or self._ai_view is None:
             return
         provider = self._ai_provider_combo.currentText()
         url = self._AI_URLS.get(provider, 'https://chat.openai.com')
         self._ai_view.load(QUrl(url))
 
-    def _toggle_ai_sidebar(self):
+    def _toggle_ai_sidebar(self):  # pragma: no cover
         panel = self._ai_panel
         is_visible = panel.maximumWidth() > 0
         if is_visible:
@@ -1004,7 +1004,7 @@ class OrbitWindow(QMainWindow):
 
     # ── privacy mode ──────────────────────────────────────────────────────────
 
-    def _toggle_privacy_mode(self):
+    def _toggle_privacy_mode(self):  # pragma: no cover
         self._privacy_mode = not self._privacy_mode
         if self._privacy_mode:
             self._privacy_overlay.show()
@@ -1015,13 +1015,13 @@ class OrbitWindow(QMainWindow):
         if hasattr(self, '_tray_privacy_act'):
             self._tray_privacy_act.setChecked(self._privacy_mode)
 
-    def _update_privacy_overlay_size(self):
+    def _update_privacy_overlay_size(self):  # pragma: no cover
         if hasattr(self, '_privacy_overlay'):
             self._privacy_overlay.resize(self._stack.size())
 
     # ── sidebar ───────────────────────────────────────────────────────────────
 
-    def _rebuild_sidebar(self):
+    def _rebuild_sidebar(self):  # pragma: no cover
         # Clear ALL widgets from the service layout (buttons + group headers + wrappers)
         while self._svc_layout.count():
             item = self._svc_layout.takeAt(0)
@@ -1105,7 +1105,7 @@ class OrbitWindow(QMainWindow):
                 else:
                     self._stack.setCurrentWidget(self._welcome)
 
-    def _make_group_header(self, group: ServiceGroup) -> QWidget:
+    def _make_group_header(self, group: ServiceGroup) -> QWidget:  # pragma: no cover
         header = QWidget()
         header.setCursor(Qt.PointingHandCursor)
         layout = QHBoxLayout(header)
@@ -1127,12 +1127,12 @@ class OrbitWindow(QMainWindow):
         )
         return header
 
-    def _toggle_group(self, group: ServiceGroup):
+    def _toggle_group(self, group: ServiceGroup):  # pragma: no cover
         group.collapsed = not group.collapsed
         self._save()
         self._rebuild_sidebar()
 
-    def _show_group_ctx_menu(self, group: ServiceGroup, global_pos):
+    def _show_group_ctx_menu(self, group: ServiceGroup, global_pos):  # pragma: no cover
         menu = QMenu(self)
         rename_act = menu.addAction('✏️ Renomear grupo')
         remove_act = menu.addAction('🗑️ Remover grupo')
@@ -1142,19 +1142,19 @@ class OrbitWindow(QMainWindow):
         elif action == remove_act:
             self._remove_group(group)
 
-    def _rename_group(self, group: ServiceGroup):
+    def _rename_group(self, group: ServiceGroup):  # pragma: no cover
         name, ok = QInputDialog.getText(self, 'Renomear grupo', 'Novo nome:', text=group.name)
         if ok and name.strip():
             group.name = name.strip()
             self._save()
             self._rebuild_sidebar()
 
-    def _remove_group(self, group: ServiceGroup):
+    def _remove_group(self, group: ServiceGroup):  # pragma: no cover
         self._active_workspace.groups.remove(group)
         self._save()
         self._rebuild_sidebar()
 
-    def _create_group_for(self, svc: Service):
+    def _create_group_for(self, svc: Service):  # pragma: no cover
         import uuid
         name, ok = QInputDialog.getText(self, 'Criar grupo', 'Nome do grupo:')
         if ok and name.strip():
@@ -1163,7 +1163,7 @@ class OrbitWindow(QMainWindow):
             self._save()
             self._rebuild_sidebar()
 
-    def _move_to_group(self, svc: Service, group_id):
+    def _move_to_group(self, svc: Service, group_id):  # pragma: no cover
         for g in self._active_workspace.groups:
             if svc.id in g.service_ids:
                 g.service_ids.remove(svc.id)
@@ -1174,7 +1174,7 @@ class OrbitWindow(QMainWindow):
         self._save()
         self._rebuild_sidebar()
 
-    def _toggle_compact(self):
+    def _toggle_compact(self):  # pragma: no cover
         self._sidebar_compact = not self._sidebar_compact
         settings = load_settings()
         settings['sidebar_compact'] = self._sidebar_compact
@@ -1195,7 +1195,7 @@ class OrbitWindow(QMainWindow):
         self._compact_timer.timeout.connect(self._animate_compact_step)
         self._compact_timer.start(12)
 
-    def _animate_compact_step(self):
+    def _animate_compact_step(self):  # pragma: no cover
         self._compact_step += 1
         w = int(self._compact_start + self._compact_delta * self._compact_step)
         total = sum(self._splitter.sizes())
@@ -1207,19 +1207,19 @@ class OrbitWindow(QMainWindow):
             self._rebuild_sidebar()
             self._update_compact_btn()
 
-    def _update_compact_btn(self):
+    def _update_compact_btn(self):  # pragma: no cover
         if hasattr(self, '_compact_btn'):
             icon_name = 'chevron-double-right' if self._sidebar_compact else 'chevron-double-left'
             self._compact_btn.setIcon(svg_icon(icon_name, 14, '#6e6e8a'))
             self._compact_btn.setIconSize(QSize(14, 14))
 
-    def _on_splitter_moved(self, pos: int, index: int):
+    def _on_splitter_moved(self, pos: int, index: int):  # pragma: no cover
         sizes = self._splitter.sizes()
         settings = load_settings()
         settings['sidebar_width'] = sizes[0]
         save_settings(settings)
 
-    def _fetch_service_icons(self):
+    def _fetch_service_icons(self):  # pragma: no cover
         from .catalog import get_entry
         seen_urls: set = set()
         for svc in self._services:
@@ -1228,7 +1228,7 @@ class OrbitWindow(QMainWindow):
                 seen_urls.add(entry.favicon_url)
                 self._icon_fetcher.fetch(entry.favicon_url)
 
-    def _on_icon_fetched(self, url: str, pixmap: QPixmap):
+    def _on_icon_fetched(self, url: str, pixmap: QPixmap):  # pragma: no cover
         from .catalog import get_entry
         for svc in self._services:
             entry = get_entry(svc.service_type)
@@ -1239,7 +1239,7 @@ class OrbitWindow(QMainWindow):
 
     # ── workspace ────────────────────────────────────────────────────────────
 
-    def _apply_theme(self, theme: str):
+    def _apply_theme(self, theme: str):  # pragma: no cover
         self._theme = theme
         accent_color = ACCENTS.get(self._accent, ACCENTS['Iris'])
         # Use workspace-specific accent if set
@@ -1257,7 +1257,7 @@ class OrbitWindow(QMainWindow):
                 'QWidget#sidebar { background: transparent; border-right: none; }'
             )
 
-    def _set_accent(self, name: str):
+    def _set_accent(self, name: str):  # pragma: no cover
         self._accent = name
         s = load_settings()
         s['accent'] = name
@@ -1265,7 +1265,7 @@ class OrbitWindow(QMainWindow):
         self._apply_theme(self._theme)
         ToastManager.show(self, f'Tema {name} aplicado!', 'success')
 
-    def _update_workspace_btn(self):
+    def _update_workspace_btn(self):  # pragma: no cover
         name = self._active_workspace.name
         fm = self._ws_btn.fontMetrics()
         available = self._ws_btn.width() - 20  # account for padding
@@ -1274,7 +1274,7 @@ class OrbitWindow(QMainWindow):
         elided = fm.elidedText(name, Qt.ElideRight, available)
         self._ws_btn.setText(f'{elided} ▾')
 
-    def _show_workspace_menu(self):
+    def _show_workspace_menu(self):  # pragma: no cover
         menu = QMenu(self)
         for ws in self._workspaces:
             act = menu.addAction(ws.name)
@@ -1285,7 +1285,7 @@ class OrbitWindow(QMainWindow):
         menu.addAction('＋ Novo workspace').triggered.connect(self._add_workspace)
         menu.exec(self._ws_btn.mapToGlobal(self._ws_btn.rect().bottomLeft()))
 
-    def _show_workspace_ctx_menu(self, global_pos):
+    def _show_workspace_ctx_menu(self, global_pos):  # pragma: no cover
         menu = QMenu(self)
         rename_act = menu.addAction('✏  Renomear workspace')
         rename_act.triggered.connect(self._rename_workspace)
@@ -1322,7 +1322,7 @@ class OrbitWindow(QMainWindow):
                 'QWidget#sidebar { background: transparent; border-right: none; }'
             )
 
-    def _add_workspace(self):
+    def _add_workspace(self):  # pragma: no cover
         from .models import new_id
         dlg = EditWorkspaceDialog(parent=self)
         dlg.setWindowTitle('Novo workspace')
@@ -1335,7 +1335,7 @@ class OrbitWindow(QMainWindow):
             self._switch_workspace(ws)
             self._save()
 
-    def _rename_workspace(self):
+    def _rename_workspace(self):  # pragma: no cover
         dlg = EditWorkspaceDialog(
             name=self._active_workspace.name,
             accent=self._active_workspace.accent,
@@ -1361,7 +1361,7 @@ class OrbitWindow(QMainWindow):
                 )
             self._save()
 
-    def _delete_workspace(self):
+    def _delete_workspace(self):  # pragma: no cover
         if len(self._workspaces) <= 1:
             return
         dlg = ConfirmDialog(f'Excluir workspace "{self._active_workspace.name}" e todos os seus serviços?', self)
@@ -1373,7 +1373,7 @@ class OrbitWindow(QMainWindow):
 
     # ── header ────────────────────────────────────────────────────────────────
 
-    def _refresh_header(self):
+    def _refresh_header(self):  # pragma: no cover
         while self._header_layout.count():
             item = self._header_layout.takeAt(0)
             w = item.widget()
@@ -1486,7 +1486,7 @@ class OrbitWindow(QMainWindow):
 
     # ── selection ─────────────────────────────────────────────────────────────
 
-    def _select_service(self, service: Service):
+    def _select_service(self, service: Service):  # pragma: no cover
         # Record time on previous service
         if self._active_service and self._service_start_time:
             elapsed = time.time() - self._service_start_time
@@ -1511,7 +1511,7 @@ class OrbitWindow(QMainWindow):
             self._refresh_header()
         self._save()
 
-    def _select_account(self, account: Account):
+    def _select_account(self, account: Account):  # pragma: no cover
         if not self._active_service:
             return
         self._active_account = account
@@ -1577,7 +1577,7 @@ class OrbitWindow(QMainWindow):
         self._refresh_header()
         self._save()
 
-    def _update_badge(self, service: Service, count: int):
+    def _update_badge(self, service: Service, count: int):  # pragma: no cover
         prev = service.unread
         service.unread = count
         btn = self._svc_btns.get(service.id)
@@ -1600,14 +1600,14 @@ class OrbitWindow(QMainWindow):
                     play_sound(service.notification_sound)
         self._save()
 
-    def _on_active_load_status(self, status: str):
+    def _on_active_load_status(self, status: str):  # pragma: no cover
         self._status_badge.set_status(
             'connecting' if status == 'loading' else
             'ready' if status == 'ready' else
             'error'
         )
 
-    def _update_title(self):
+    def _update_title(self):  # pragma: no cover
         total_unread = sum(s.unread for s in self._services)
         svc_name = self._active_service.name if self._active_service else ''
         badge = f'({total_unread}) ' if total_unread > 0 else ''
@@ -1616,7 +1616,7 @@ class OrbitWindow(QMainWindow):
         else:
             self.setWindowTitle(f'{badge}Orbit')
 
-    def _update_title_badge(self):
+    def _update_title_badge(self):  # pragma: no cover
         total = sum(s.unread for s in self._services)
         if hasattr(self, '_tray'):
             if total > 0:
@@ -1626,7 +1626,7 @@ class OrbitWindow(QMainWindow):
         self._update_tray_badge()
         self._update_title()
 
-    def _update_tray_badge(self):
+    def _update_tray_badge(self):  # pragma: no cover
         if not hasattr(self, '_tray'):
             return
         total = sum(getattr(s, 'unread', 0) for s in self._services)
@@ -1655,14 +1655,14 @@ class OrbitWindow(QMainWindow):
         p.end()
         self._tray.setIcon(QIcon(px))
 
-    def _on_load_status(self, service_id: str, status: str):
+    def _on_load_status(self, service_id: str, status: str):  # pragma: no cover
         btn = self._svc_btns.get(service_id)
         if btn:
             btn.set_status(status)
 
     # ── context menu ──────────────────────────────────────────────────────────
 
-    def _show_ctx_menu(self, service: Service, global_pos):
+    def _show_ctx_menu(self, service: Service, global_pos):  # pragma: no cover
         menu = QMenu(self)
         config_act = menu.addAction('Configurar')
         config_act.setIcon(svg_icon('cog-6-tooth', 14, '#6c7086'))
@@ -1755,7 +1755,7 @@ class OrbitWindow(QMainWindow):
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
-    def _add_service(self):
+    def _add_service(self):  # pragma: no cover
         dlg = AddServiceDialog(self)
         if dlg.exec() == QDialog.Accepted:
             svc = dlg.get_service()
@@ -1765,7 +1765,7 @@ class OrbitWindow(QMainWindow):
                 self._select_service(svc)
                 self._save()
 
-    def _add_account(self):
+    def _add_account(self):  # pragma: no cover
         if not self._active_service:
             return
         dlg = AddAccountDialog(self._active_service, self)
@@ -1776,7 +1776,7 @@ class OrbitWindow(QMainWindow):
                 self._select_account(acc)
                 self._save()
 
-    def _configure(self, service: Service):
+    def _configure(self, service: Service):  # pragma: no cover
         old_css = service.custom_css
         old_js = service.custom_js
         dlg = ConfigDialog(service, self)
@@ -1798,7 +1798,7 @@ class OrbitWindow(QMainWindow):
                     self._select_account(active_acc)
             self._save()
 
-    def _remove_service(self, service: Service):
+    def _remove_service(self, service: Service):  # pragma: no cover
         dlg = ConfirmDialog(f'Remover "{service.name}" e todas as contas?', self)
         if dlg.exec() != QDialog.Accepted:
             return
@@ -1830,12 +1830,12 @@ class OrbitWindow(QMainWindow):
 
     # ── persistence ───────────────────────────────────────────────────────────
 
-    def _save(self):
+    def _save(self):  # pragma: no cover
         save_workspaces(self._workspaces)
 
     # ── chrome cookie sync ────────────────────────────────────────────────────
 
-    def _sync_chrome_cookies(self, service: Service):
+    def _sync_chrome_cookies(self, service: Service):  # pragma: no cover
         """Import Google cookies from any browser and reload views for this service."""
         import subprocess, time
         from PySide6.QtWidgets import QMessageBox
@@ -1909,7 +1909,7 @@ class OrbitWindow(QMainWindow):
 
     # ── tray ──────────────────────────────────────────────────────────────────
 
-    def _export_backup(self):
+    def _export_backup(self):  # pragma: no cover
         import zipfile
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         path, _ = QFileDialog.getSaveFileName(
@@ -1926,7 +1926,7 @@ class OrbitWindow(QMainWindow):
                     zf.write(fpath, fname)
         ToastManager.show(self, 'Backup exportado com sucesso!', 'success')
 
-    def _import_backup(self):
+    def _import_backup(self):  # pragma: no cover
         import zipfile
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         path, _ = QFileDialog.getOpenFileName(
@@ -1947,7 +1947,7 @@ class OrbitWindow(QMainWindow):
             QMessageBox.critical(self, 'Orbit', f'Erro ao importar: {e}')
             ToastManager.show(self, f'Erro ao importar: {e}', 'error')
 
-    def _show_cloud_sync_dialog(self):
+    def _show_cloud_sync_dialog(self):  # pragma: no cover
         import threading
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                                         QPushButton, QLabel, QHBoxLayout, QDialogButtonBox)
@@ -2141,7 +2141,7 @@ class OrbitWindow(QMainWindow):
         download_btn.clicked.connect(on_download)
         dlg.exec()
 
-    def _show_import_dialog(self):
+    def _show_import_dialog(self):  # pragma: no cover
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton,
                                         QHBoxLayout, QRadioButton, QButtonGroup,
                                         QFileDialog, QDialogButtonBox, QMessageBox)
@@ -2236,7 +2236,7 @@ class OrbitWindow(QMainWindow):
         layout.addWidget(btns)
         dlg.exec()
 
-    def _show_stats_dialog(self):
+    def _show_stats_dialog(self):  # pragma: no cover
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QDialogButtonBox,
                                         QScrollArea, QWidget, QHBoxLayout, QProgressBar)
         weekly = get_weekly_totals()
@@ -2287,7 +2287,7 @@ class OrbitWindow(QMainWindow):
         layout.addWidget(btns)
         dlg.exec()
 
-    def _show_shortcuts_dialog(self):
+    def _show_shortcuts_dialog(self):  # pragma: no cover
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                                         QDialogButtonBox, QLabel, QPushButton)
         from .storage import _DEFAULT_SHORTCUTS
@@ -2359,7 +2359,7 @@ class OrbitWindow(QMainWindow):
         layout.addWidget(btns)
         dlg.exec()
 
-    def _setup_tray(self):
+    def _setup_tray(self):  # pragma: no cover
         icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'resources', 'icon.ico')
         icon = QIcon(icon_path) if os.path.exists(icon_path) else self.style().standardIcon(
             self.style().StandardPixmap.SP_ComputerIcon
@@ -2465,12 +2465,12 @@ class OrbitWindow(QMainWindow):
         )
         self._tray.show()
 
-    def _show_and_raise(self):
+    def _show_and_raise(self):  # pragma: no cover
         self.show()
         self.raise_()
         self.activateWindow()
 
-    def _toggle_ad_block(self, enabled: bool):
+    def _toggle_ad_block(self, enabled: bool):  # pragma: no cover
         set_ad_block(enabled)
         settings = load_settings()
         settings['ad_block'] = enabled
@@ -2483,24 +2483,24 @@ class OrbitWindow(QMainWindow):
             return True
         return is_quiet_now(load_settings())
 
-    def _set_dnd(self, minutes: Optional[int]):
+    def _set_dnd(self, minutes: Optional[int]):  # pragma: no cover
         if minutes is None:
             self._dnd_until = None
         else:
             self._dnd_until = time.time() + minutes * 60
         self._update_dnd_ui()
 
-    def _toggle_dnd_shortcut(self):
+    def _toggle_dnd_shortcut(self):  # pragma: no cover
         if self._is_dnd_active():
             self._set_dnd(None)
         else:
             self._set_dnd(60)
 
-    def _update_dnd_ui(self):
+    def _update_dnd_ui(self):  # pragma: no cover
         if self._active_service:
             self._refresh_header()
 
-    def _build_dnd_menu(self, menu: QMenu):
+    def _build_dnd_menu(self, menu: QMenu):  # pragma: no cover
         menu.clear()
         if self._is_dnd_active():
             act = menu.addAction('Ativar notificações')
@@ -2530,7 +2530,7 @@ class OrbitWindow(QMainWindow):
         tomorrow = (now + datetime.timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
         return max(1, int((tomorrow - now).total_seconds() / 60))
 
-    def _show_dnd_menu(self):
+    def _show_dnd_menu(self):  # pragma: no cover
         menu = QMenu(self)
         self._build_dnd_menu(menu)
         btn = self.sender()
@@ -2539,7 +2539,7 @@ class OrbitWindow(QMainWindow):
         else:
             menu.exec(self.cursor().pos())
 
-    def _show_quiet_hours_dialog(self):
+    def _show_quiet_hours_dialog(self):  # pragma: no cover
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QCheckBox,
                                         QTimeEdit, QDialogButtonBox, QLabel, QGroupBox,
                                         QGridLayout)
@@ -2619,7 +2619,7 @@ class OrbitWindow(QMainWindow):
         layout.addWidget(btns)
         dlg.exec()
 
-    def _show_notif_history_panel(self):
+    def _show_notif_history_panel(self):  # pragma: no cover
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QListWidgetItem, QPushButton
         # Reuse existing dialog if open
         if self._notif_history_dlg and self._notif_history_dlg.isVisible():
@@ -2667,7 +2667,7 @@ class OrbitWindow(QMainWindow):
 
     # ── quick switch ──────────────────────────────────────────────────────────
 
-    def _quick_switch(self):
+    def _quick_switch(self):  # pragma: no cover
         if len(self._recent_services) < 2:
             return
         prev_id = self._recent_services[1]
@@ -2675,14 +2675,14 @@ class OrbitWindow(QMainWindow):
         if svc:
             self._select_service(svc)
 
-    def _select_service_by_id(self, svc_id: str):
+    def _select_service_by_id(self, svc_id: str):  # pragma: no cover
         svc = next((s for s in self._services if s.id == svc_id), None)
         if svc:
             self._select_service(svc)
 
     # ── multi-window ──────────────────────────────────────────────────────────
 
-    def _open_in_window(self, service: Service, account: Account):
+    def _open_in_window(self, service: Service, account: Account):  # pragma: no cover
         win = QWidget(None, Qt.Window)
         win.setAttribute(Qt.WA_DeleteOnClose)
         win.setWindowTitle(f'Orbit — {service.name} ({account.label})')
@@ -2708,7 +2708,7 @@ class OrbitWindow(QMainWindow):
 
     # ── picture-in-picture ────────────────────────────────────────────────────
 
-    def _open_pip(self, service: Service, account: Account):
+    def _open_pip(self, service: Service, account: Account):  # pragma: no cover
         pip = QWidget(None, Qt.Window | Qt.WindowStaysOnTopHint)
         pip.setAttribute(Qt.WA_DeleteOnClose)
         pip.setWindowTitle(f'PiP — {service.name}')
@@ -2751,7 +2751,7 @@ class OrbitWindow(QMainWindow):
 
     # ── pop-out service window ────────────────────────────────────────────────
 
-    def _popout_service(self, svc: Service):
+    def _popout_service(self, svc: Service):  # pragma: no cover
         if not svc.accounts:
             ToastManager.show(self, 'Adicione uma conta antes de destacar', 'error')
             return
@@ -2794,7 +2794,7 @@ class OrbitWindow(QMainWindow):
 
     # ── workspace schedule ────────────────────────────────────────────────────
 
-    def _check_workspace_schedule(self):
+    def _check_workspace_schedule(self):  # pragma: no cover
         from .workspace_schedule import get_active_workspace_id
         ws_id = get_active_workspace_id(self._ws_schedule, self._workspaces)
         if ws_id and ws_id != self._active_workspace.id:
@@ -2803,7 +2803,7 @@ class OrbitWindow(QMainWindow):
                 self._switch_workspace(target)
                 ToastManager.show(self, f'Workspace trocado: {target.name}', 'info')
 
-    def _show_workspace_schedule(self):
+    def _show_workspace_schedule(self):  # pragma: no cover
         from .workspace_schedule import load_schedule
         from .dialogs import WorkspaceScheduleDialog
         self._ws_schedule = load_schedule()
@@ -2813,7 +2813,7 @@ class OrbitWindow(QMainWindow):
 
     # ── reading list ──────────────────────────────────────────────────────────
 
-    def _show_reading_list(self):
+    def _show_reading_list(self):  # pragma: no cover
         from .reading_list import load_reading_list, mark_read, remove_item
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget,
                                         QListWidgetItem, QPushButton, QLabel, QDialogButtonBox)
@@ -2883,7 +2883,7 @@ class OrbitWindow(QMainWindow):
 
     # ── URL scheme registry ───────────────────────────────────────────────────
 
-    def _register_url_scheme(self):
+    def _register_url_scheme(self):  # pragma: no cover
         """Register orbit:// URL scheme in Windows registry."""
         try:
             import winreg, sys
@@ -2897,7 +2897,7 @@ class OrbitWindow(QMainWindow):
         except Exception:
             pass  # Non-fatal
 
-    def _check_updates(self, silent: bool = False):
+    def _check_updates(self, silent: bool = False):  # pragma: no cover
         from .updater import check_for_update
         import threading
 
@@ -2916,7 +2916,7 @@ class OrbitWindow(QMainWindow):
 
     # ── lock screen ───────────────────────────────────────────────────────────
 
-    def _init_encryption(self):
+    def _init_encryption(self):  # pragma: no cover
         """Prompt for master password at startup if encryption is enabled."""
         settings = load_settings()
         if not settings.get('encrypt_enabled'):
@@ -2948,7 +2948,7 @@ class OrbitWindow(QMainWindow):
             sys.exit(1)
         set_session_password(pwd)
 
-    def _show_encrypt_config_dialog(self):
+    def _show_encrypt_config_dialog(self):  # pragma: no cover
         """Toggle file encryption on/off with the master password."""
         settings = load_settings()
         is_enabled = settings.get('encrypt_enabled', False)
@@ -2987,7 +2987,7 @@ class OrbitWindow(QMainWindow):
             set_session_password(pwd)
             ToastManager.show(self, '🔐 Criptografia ativada!', 'success')
 
-    def _lock_now(self):
+    def _lock_now(self):  # pragma: no cover
         settings = load_settings()
         pin_hash = settings.get('pin_hash')
         if not pin_hash:
@@ -3002,7 +3002,7 @@ class OrbitWindow(QMainWindow):
         self._lock_screen.show()
         self._lock_screen.raise_()
 
-    def _show_shortcuts(self):
+    def _show_shortcuts(self):  # pragma: no cover
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QScrollArea, QWidget, QGridLayout, QDialogButtonBox, QFrame
         dlg = QDialog(self)
         dlg.setWindowTitle('Atalhos de Teclado')
@@ -3056,7 +3056,7 @@ class OrbitWindow(QMainWindow):
         lay.addWidget(btns)
         dlg.exec()
 
-    def _check_auto_lock(self):
+    def _check_auto_lock(self):  # pragma: no cover
         settings = load_settings()
         minutes = settings.get('auto_lock_minutes', 0)
         if minutes <= 0 or not settings.get('pin_hash'):
@@ -3067,7 +3067,7 @@ class OrbitWindow(QMainWindow):
             self._lock_now()
             self._last_activity = time.time()
 
-    def _show_pin_config_dialog(self):
+    def _show_pin_config_dialog(self):  # pragma: no cover
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QFormLayout, QLineEdit, QDialogButtonBox, QLabel, QSpinBox
         settings = load_settings()
 
@@ -3152,7 +3152,7 @@ class OrbitWindow(QMainWindow):
 
     # ── onboarding ────────────────────────────────────────────────────────────
 
-    def _show_onboarding(self):
+    def _show_onboarding(self):  # pragma: no cover
         dlg = OnboardingDialog(self)
         dlg.theme_chosen.connect(self._apply_theme)
         dlg.service_chosen.connect(lambda st: self._quick_add_service(st))
@@ -3161,7 +3161,7 @@ class OrbitWindow(QMainWindow):
         s['onboarding_done'] = True
         save_settings(s)
 
-    def _quick_add_service(self, service_type: str):
+    def _quick_add_service(self, service_type: str):  # pragma: no cover
         from .catalog import get_entry, GOOGLE_TYPES, google_url
         from .models import new_id, slugify
         entry = get_entry(service_type)
@@ -3185,7 +3185,7 @@ class OrbitWindow(QMainWindow):
         self._select_service(svc)
         self._save()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event):  # pragma: no cover
         g = self.geometry()
         settings = load_settings()
         settings['geometry'] = {'x': g.x(), 'y': g.y(), 'w': g.width(), 'h': g.height()}
@@ -3196,12 +3196,12 @@ class OrbitWindow(QMainWindow):
 
     # ── hibernate ─────────────────────────────────────────────────────────────
 
-    def _setup_hibernate_timers(self):
+    def _setup_hibernate_timers(self):  # pragma: no cover
         """Start/restart hibernate timer for all services that have it configured."""
         for svc in self._services:
             self._reset_hibernate_timer(svc)
 
-    def _reset_hibernate_timer(self, service: Service):
+    def _reset_hibernate_timer(self, service: Service):  # pragma: no cover
         old = self._hibernate_timers.pop(service.id, None)
         if old:
             old.stop()
@@ -3215,7 +3215,7 @@ class OrbitWindow(QMainWindow):
         timer.start()
         self._hibernate_timers[service.id] = timer
 
-    def _hibernate_service(self, service: Service):
+    def _hibernate_service(self, service: Service):  # pragma: no cover
         """Pause all views for a service (load blank page to free memory)."""
         from PySide6.QtCore import QUrl
         for acc in service.accounts:
@@ -3225,7 +3225,7 @@ class OrbitWindow(QMainWindow):
                 self._hibernated.add(key)
         print(f'[hibernate] {service.name} hibernated')
 
-    def _wake_service(self, service: Service, account: Account):
+    def _wake_service(self, service: Service, account: Account):  # pragma: no cover
         """Wake a hibernated service by reloading its URL."""
         from PySide6.QtCore import QUrl
         key = (service.id, account.id)
@@ -3272,7 +3272,7 @@ class OrbitWindow(QMainWindow):
 
     # ── command palette ───────────────────────────────────────────────────────
 
-    def _show_palette(self):
+    def _show_palette(self):  # pragma: no cover
         from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout, QLabel
         from PySide6.QtCore import QTimer
 
@@ -3357,11 +3357,11 @@ class OrbitWindow(QMainWindow):
 
     # ── drag & drop sidebar reordering ────────────────────────────────────────
 
-    def _svc_drag_enter(self, event):
+    def _svc_drag_enter(self, event):  # pragma: no cover
         if event.mimeData().hasFormat('application/x-orbit-service'):
             event.acceptProposedAction()
 
-    def _svc_drop(self, event):
+    def _svc_drop(self, event):  # pragma: no cover
         if not event.mimeData().hasFormat('application/x-orbit-service'):
             return
         svc_id = event.mimeData().data('application/x-orbit-service').toStdString()

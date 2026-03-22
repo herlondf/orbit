@@ -1,709 +1,821 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 import './App.css'
+import { type ServiceCatalogEntry, serviceCatalog } from './catalog'
 import {
-  seedWorkspace,
   type ChatAccount,
   type ChatService,
-  type NotificationMode,
+  type HibernateAfter,
   type WorkspaceSnapshot,
 } from './contracts'
 import { ensureTray, pushDesktopNotification } from './desktopShell'
 import { loadWorkspaceSnapshot, saveWorkspaceSnapshot } from './storage'
 import {
   accountLabel,
-  closeAccountWebview,
-  closeAccountWebviews,
-  listAccountWebviews,
-  openAccountWebview,
-  openAccountWebviews,
+  closeWebview,
+  createEmbeddedWebview,
+  hideWebview,
+  navigateWebview,
+  openExternal,
+  openWebviewDevtools,
+  setWebviewBounds,
+  showWebview,
 } from './serviceHost'
 
-const statusLabel = {
-  healthy: 'Estavel',
-  warning: 'Atencao',
-  offline: 'Offline',
-} as const
+// ─── types ────────────────────────────────────────────────────────────────────
 
-const notificationLabel: Record<NotificationMode, string> = {
-  native: 'Nativo',
-  muted: 'Silenciado',
-  mentions: 'So mencoes',
+type ToastEntry = {
+  id: string
+  serviceId: string
+  serviceIcon: string
+  serviceColor: string
+  serviceName: string
+  title: string
+  body: string
 }
 
-function nextNotificationMode(mode: NotificationMode): NotificationMode {
-  if (mode === 'native') {
-    return 'mentions'
-  }
-  if (mode === 'mentions') {
-    return 'muted'
-  }
-  return 'native'
+type CtxMenu = { serviceId: string; x: number; y: number }
+
+// ─── components ───────────────────────────────────────────────────────────────
+
+function ToastList({ toasts, onDismiss, onActivate }: {
+  toasts: ToastEntry[]
+  onDismiss: (id: string) => void
+  onActivate: (serviceId: string) => void
+}) {
+  if (toasts.length === 0) return null
+  return (
+    <div className="toast-container">
+      {toasts.map((t) => (
+        <div key={t.id} className="toast" onClick={() => { onActivate(t.serviceId); onDismiss(t.id) }}>
+          <div className="toast-icon" style={{ background: t.serviceColor }}>{t.serviceIcon}</div>
+          <div className="toast-text">
+            <span className="toast-svc">{t.serviceName}</span>
+            <span className="toast-title">{t.title}</span>
+            {t.body && <span className="toast-body">{t.body}</span>}
+          </div>
+          <button className="toast-close" onClick={(e) => { e.stopPropagation(); onDismiss(t.id) }}>✕</button>
+        </div>
+      ))}
+    </div>
+  )
 }
 
-function App() {
+function ContextMenu({ menu, onClose, onConfig, onAddAccount, onRemove }: {
+  menu: CtxMenu
+  onClose: () => void
+  onConfig: () => void
+  onAddAccount: () => void
+  onRemove: () => void
+}) {
+  return (
+    <>
+      <div className="ctx-overlay" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }} />
+      <div className="ctx-menu" style={{ left: menu.x, top: menu.y }}>
+        <button className="ctx-item" onClick={() => { onConfig(); onClose() }}>⚙&ensp;Configurar</button>
+        <button className="ctx-item" onClick={() => { onAddAccount(); onClose() }}>+&ensp;Adicionar conta</button>
+        <div className="ctx-sep" />
+        <button className="ctx-item danger" onClick={() => { onRemove(); onClose() }}>🗑&ensp;Remover serviço</button>
+      </div>
+    </>
+  )
+}
+
+function ConfirmModal({ message, onConfirm, onCancel }: {
+  message: string
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div className="modal-overlay">
+      <div className="modal-box" style={{ width: 380, gap: 20 }}>
+        <p className="modal-title">Confirmar</p>
+        <p style={{ fontSize: 14, color: '#cdd6f4', lineHeight: 1.6 }}>{message}</p>
+        <div className="modal-actions">
+          <button className="btn btn-secondary" onClick={onCancel}>Cancelar</button>
+          <button className="btn btn-danger" onClick={onConfirm}>Remover</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NewWinDialog({ url, onInApp, onExternal, onCancel }: {
+  url: string
+  onInApp: () => void
+  onExternal: () => void
+  onCancel: () => void
+}) {
+  let domain = url
+  try { domain = new URL(url).hostname } catch (_) { /* ignore */ }
+  return (
+    <div className="modal-overlay">
+      <div className="modal-box" style={{ width: 400, gap: 16 }}>
+        <p className="modal-title">🔗 Abrir link</p>
+        <p style={{ fontSize: 13, color: '#6c7086', wordBreak: 'break-all', lineHeight: 1.5 }}>
+          <span style={{ color: '#cba6f7', fontWeight: 600 }}>{domain}</span>
+          <br />{url.length > 80 ? url.slice(0, 80) + '…' : url}
+        </p>
+        <div className="modal-actions" style={{ flexDirection: 'column', gap: 8 }}>
+          <button className="btn btn-primary" style={{ width: '100%' }} onClick={onInApp}>
+            🖥 Abrir no OctoChat
+          </button>
+          <button className="btn btn-secondary" style={{ width: '100%' }} onClick={onExternal}>
+            🌐 Abrir no navegador externo
+          </button>
+          <button className="btn btn-secondary" style={{ width: '100%', color: '#6c7086' }} onClick={onCancel}>
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+function parseUnread(title: string): number {
+  const m = /\((\d+)\)/.exec(title)
+  return m ? parseInt(m[1], 10) : 0
+}
+
+function uniqueId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+function slugify(v: string): string {
+  return v.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+
+export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(() => loadWorkspaceSnapshot())
-  const [runtimeStatus, setRuntimeStatus] = useState<'idle' | 'opening' | 'ready' | 'error'>('idle')
-  const [runtimeMessage, setRuntimeMessage] = useState('Nenhuma webview real aberta nesta sessao.')
-  const [openViews, setOpenViews] = useState<string[]>([])
-  const [desktopStatus, setDesktopStatus] = useState<'idle' | 'tray-ready' | 'notified' | 'error'>('idle')
-  const [desktopMessage, setDesktopMessage] = useState('Tray e notificacoes ainda nao inicializados.')
-  const [runtimeEvents, setRuntimeEvents] = useState<string[]>([
-    'Shell inicializado. Aguardando interacao do operador.',
-  ])
-  const restoreAttempted = useRef(false)
+  const [activeServiceId, setActiveServiceId] = useState<string | null>(
+    () => loadWorkspaceSnapshot().activeServiceId || null,
+  )
+  const [activeAccountId, setActiveAccountId] = useState<string | null>(
+    () => loadWorkspaceSnapshot().activeAccountId || null,
+  )
 
-  function pushRuntimeEvent(message: string) {
-    const timestamp = new Date().toLocaleTimeString('pt-BR')
-    setRuntimeEvents((current) => [`${timestamp} • ${message}`, ...current].slice(0, 12))
-  }
+  // Modals
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [catalogEntry, setCatalogEntry] = useState<ServiceCatalogEntry | null>(null)
+  const [addLabel, setAddLabel] = useState('')
+  const [addUrl, setAddUrl] = useState('')
+  const [addAccountSvcId, setAddAccountSvcId] = useState<string | null>(null)
+  const [addAccountLabel, setAddAccountLabel] = useState('')
+  const [addAccountUrl, setAddAccountUrl] = useState('')
 
-  useEffect(() => {
-    saveWorkspaceSnapshot(workspace)
-  }, [workspace])
+  // UI state
+  const [configServiceId, setConfigServiceId] = useState<string | null>(null)
+  const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null)
+  const [toasts, setToasts] = useState<ToastEntry[]>([])
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; resolve: (v: boolean) => void } | null>(null)
+  const [newWinDialog, setNewWinDialog] = useState<{ label: string; url: string } | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
+  // Refs
+  const openedLabels = useRef(new Set<string>())
+  const webviewAreaRef = useRef<HTMLDivElement>(null)
+  const lastFocusedAt = useRef(new Map<string, number>())
+  const workspaceRef = useRef(workspace)
+  workspaceRef.current = workspace
 
-    async function syncOpenViews() {
-      try {
-        const views = await listAccountWebviews()
-        if (!cancelled) {
-          setOpenViews(views)
-          setWorkspace((current) => {
-            const nextLiveAccountIds = current.services
-              .flatMap((service) => service.accounts)
-              .filter((account) => views.includes(accountLabel(account)))
-              .map((account) => account.id)
+  // Stable refs for event listener callbacks (avoid stale closure re-registration)
+  const activeServiceIdRef = useRef(activeServiceId)
+  activeServiceIdRef.current = activeServiceId
 
-            if (JSON.stringify(nextLiveAccountIds) === JSON.stringify(current.liveAccountIds)) {
-              return current
-            }
+  // ── derived ───────────────────────────────────────────────────────────────────
 
-            return {
-              ...current,
-              liveAccountIds: nextLiveAccountIds,
-            }
-          })
-          pushRuntimeEvent(`sincronizacao concluida com ${views.length} webviews abertas`)
-        }
-      } catch {
-        if (!cancelled) {
-          setRuntimeStatus('error')
-          setRuntimeMessage('falha ao sincronizar webviews ativas')
-          pushRuntimeEvent('falha ao sincronizar webviews ativas')
-        }
-      }
-    }
+  const activeService = useMemo(
+    () => workspace.services.find((s) => s.id === activeServiceId) ?? null,
+    [workspace.services, activeServiceId],
+  )
+  const activeAccount = useMemo(
+    () =>
+      activeService?.accounts.find((a) => a.id === activeAccountId) ??
+      activeService?.accounts[0] ??
+      null,
+    [activeService, activeAccountId],
+  )
 
-    void syncOpenViews()
-    const intervalId = window.setInterval(() => {
-      void syncOpenViews()
-    }, 2_500)
+  const activeAccountRef = useRef(activeAccount)
+  activeAccountRef.current = activeAccount
 
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
-    }
-  }, [])
-
-  const accountIndex = useMemo(() => {
-    const map = new Map<string, ChatAccount>()
-    for (const service of workspace.services) {
-      for (const account of service.accounts) {
-        map.set(account.id, account)
-      }
-    }
+  const serviceByLabelRef = useRef(new Map<string, ChatService>())
+  serviceByLabelRef.current = useMemo(() => {
+    const map = new Map<string, ChatService>()
+    for (const svc of workspace.services)
+      for (const acc of svc.accounts) map.set(accountLabel(acc), svc)
     return map
   }, [workspace.services])
 
-  const visibleServices = useMemo(() => {
-    const search = workspace.search.trim().toLowerCase()
-    const services = workspace.services.filter((service) => {
-      if (!search) {
-        return true
-      }
-      return (
-        service.name.toLowerCase().includes(search) ||
-        service.accounts.some(
-          (account) =>
-            account.label.toLowerCase().includes(search) ||
-            account.workspace.toLowerCase().includes(search),
-        )
-      )
+  // Any modal open → webviews must be hidden so they don't cover the overlay
+  // Also hide for context menu (WebView2 native controls always appear above DOM)
+  const anyModalOpen = showAddModal || !!addAccountSvcId || !!confirmDialog || !!ctxMenu || !!newWinDialog
+
+  // ── showConfirm helper (replaces window.confirm) ──────────────────────────────
+
+  const showConfirm = useCallback((message: string): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      setConfirmDialog({ message, resolve })
     })
+  , [])
 
-    return [...services].sort((left, right) => Number(right.pinned) - Number(left.pinned))
-  }, [workspace.search, workspace.services])
-
-  const activeService =
-    workspace.services.find((service) => service.id === workspace.activeServiceId) ??
-    workspace.services[0] ??
-    seedWorkspace.services[0]
-
-  const activeAccount =
-    activeService.accounts.find((account) => account.id === workspace.activeAccountId) ??
-    activeService.accounts[0]
-
-  const totalUnread = useMemo(
-    () => workspace.services.reduce((sum, service) => sum + service.unread, 0),
-    [workspace.services],
-  )
-
-  const connectedAccounts = useMemo(
-    () => workspace.services.reduce((sum, service) => sum + service.accounts.length, 0),
-    [workspace.services],
-  )
+  // ── persist ───────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (restoreAttempted.current || !workspace.preferences.restoreLiveSessions) {
-      return
+    saveWorkspaceSnapshot({
+      ...workspace,
+      activeServiceId: activeServiceId ?? '',
+      activeAccountId: activeAccountId ?? '',
+    })
+  }, [workspace, activeServiceId, activeAccountId])
+
+  // ── tray ──────────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    void ensureTray(() => {}).catch(() => {})
+  }, [])
+
+  // ── F12: open DevTools for the active webview ──────────────────────────────────
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'F12') {
+        const acc = activeAccountRef.current
+        if (acc) void openWebviewDevtools(accountLabel(acc)).catch(() => {})
+      }
     }
-    if (openViews.length > 0 || workspace.liveAccountIds.length === 0) {
-      restoreAttempted.current = true
-      return
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  // ── webview:newwin — new tab/window requested from a child webview ────────────
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    void listen<{ label: string; url: string }>('webview:newwin', (ev) => {
+      setNewWinDialog({ label: ev.payload.label, url: ev.payload.url })
+    }).then((fn) => { unlisten = fn })
+    return () => unlisten?.()
+  }, [])
+
+  // ── hide/restore webviews when modal opens/closes ─────────────────────────────
+
+  useEffect(() => {
+    if (anyModalOpen) {
+      for (const lbl of openedLabels.current) void hideWebview(lbl).catch(() => {})
+    } else {
+      const acc = activeAccountRef.current
+      if (acc) {
+        const lbl = accountLabel(acc)
+        if (openedLabels.current.has(lbl)) void showWebview(lbl).catch(() => {})
+      }
     }
+  }, [anyModalOpen])
 
-    const accountsToRestore = workspace.liveAccountIds
-      .map((accountId) => accountIndex.get(accountId))
-      .filter((account): account is ChatAccount => !!account)
+  // ── webview bounds: resize observer ───────────────────────────────────────────
 
-    if (accountsToRestore.length === 0) {
-      restoreAttempted.current = true
-      return
+  const getBounds = useCallback(() => {
+    const el = webviewAreaRef.current
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return {
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+      width: Math.round(r.width),
+      height: Math.round(r.height),
     }
+  }, [])
 
-    restoreAttempted.current = true
-    setRuntimeStatus('opening')
-    setRuntimeMessage(`Restaurando ${accountsToRestore.length} webviews persistidas...`)
-    pushRuntimeEvent(`restauracao automatica iniciada para ${accountsToRestore.length} sessoes`)
-    void openAccountWebviews(accountsToRestore)
-      .then(async () => {
-        const views = await listAccountWebviews()
-        setOpenViews(views)
-        setRuntimeStatus('ready')
-        setRuntimeMessage(`${views.length} webviews restauradas a partir do ultimo workspace.`)
-        pushRuntimeEvent(`${views.length} webviews restauradas a partir do ultimo workspace`)
-      })
-      .catch((error) => {
-        setRuntimeStatus('error')
-        setRuntimeMessage(
-          error instanceof Error ? error.message : 'falha ao restaurar webviews persistidas',
-        )
-        pushRuntimeEvent('falha na restauracao automatica de sessoes')
-      })
-  }, [accountIndex, openViews.length, workspace.liveAccountIds, workspace.preferences.restoreLiveSessions])
+  useEffect(() => {
+    const el = webviewAreaRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      const b = getBounds()
+      if (!b) return
+      for (const lbl of openedLabels.current)
+        void setWebviewBounds(lbl, b.x, b.y, b.width, b.height).catch(() => {})
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  })
 
-  function updateWorkspace(recipe: (current: WorkspaceSnapshot) => WorkspaceSnapshot) {
-    setWorkspace((current) => recipe(current))
+  // ── account activation ────────────────────────────────────────────────────────
+
+  const handleSelectAccount = useCallback(
+    async (account: ChatAccount) => {
+      const lbl = accountLabel(account)
+      lastFocusedAt.current.set(account.id, Date.now())
+
+      const b = getBounds()
+      if (!openedLabels.current.has(lbl)) {
+        if (b) {
+          await createEmbeddedWebview(account, b.x, b.y, b.width, b.height).catch(() => {})
+          openedLabels.current.add(lbl)
+          setWorkspace((ws) => ({
+            ...ws,
+            liveAccountIds: Array.from(new Set([...ws.liveAccountIds, account.id])),
+          }))
+        }
+      } else if (b) {
+        await setWebviewBounds(lbl, b.x, b.y, b.width, b.height).catch(() => {})
+      }
+
+      for (const other of openedLabels.current)
+        if (other !== lbl) await hideWebview(other).catch(() => {})
+      if (openedLabels.current.has(lbl)) await showWebview(lbl).catch(() => {})
+
+      setActiveAccountId(account.id)
+    },
+    [getBounds],
+  )
+
+  const handleSelectService = useCallback(
+    (service: ChatService) => {
+      setActiveServiceId(service.id)
+      setConfigServiceId(null)
+      setCtxMenu(null)
+      const first = service.accounts[0]
+      if (first) void handleSelectAccount(first)
+    },
+    [handleSelectAccount],
+  )
+
+  // Auto-open first account when service changes
+  const prevServiceId = useRef<string | null>(null)
+  useEffect(() => {
+    if (!activeService || !activeAccount) return
+    if (activeService.id === prevServiceId.current) return
+    prevServiceId.current = activeService.id
+    if (!openedLabels.current.has(accountLabel(activeAccount))) {
+      const t = window.setTimeout(() => void handleSelectAccount(activeAccount), 50)
+      return () => window.clearTimeout(t)
+    }
+  }, [activeService, activeAccount, handleSelectAccount])
+
+  // ── toast helper ──────────────────────────────────────────────────────────────
+
+  const addToast = useCallback((entry: Omit<ToastEntry, 'id'>) => {
+    const id = uniqueId()
+    setToasts((prev) => [...prev.slice(-4), { ...entry, id }])
+    window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 6_000)
+  }, [])
+
+  const addToastRef = useRef(addToast)
+  addToastRef.current = addToast
+
+  // ── event listeners (stable — use refs to avoid re-registration) ──────────────
+
+  useEffect(() => {
+    const unlistenNotif = listen<{ label: string; title: string; body: string }>(
+      'webview:notification',
+      ({ payload }) => {
+        void pushDesktopNotification(payload.title, payload.body).catch(() => {})
+        const svc = serviceByLabelRef.current.get(payload.label)
+        if (svc) {
+          addToastRef.current({
+            serviceId: svc.id,
+            serviceIcon: svc.icon,
+            serviceColor: svc.color,
+            serviceName: svc.name,
+            title: payload.title,
+            body: payload.body,
+          })
+        }
+      },
+    )
+
+    const unlistenTitle = listen<{ label: string; title: string }>(
+      'webview:title',
+      ({ payload }) => {
+        const unread = parseUnread(payload.title)
+        setWorkspace((ws) => ({
+          ...ws,
+          services: ws.services.map((s) => {
+            const owns = s.accounts.some((a) => accountLabel(a) === payload.label)
+            return owns ? { ...s, unread } : s
+          }),
+        }))
+      },
+    )
+
+    return () => {
+      void unlistenNotif.then((fn) => fn())
+      void unlistenTitle.then((fn) => fn())
+    }
+  }, []) // stable — uses refs internally
+
+  // ── hibernate ─────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const id = window.setInterval(async () => {
+      const ws = workspaceRef.current
+      const now = Date.now()
+      for (const svc of ws.services) {
+        if (!svc.hibernateAfter) continue
+        const threshold = svc.hibernateAfter * 60_000
+        for (const acc of svc.accounts) {
+          if (!ws.liveAccountIds.includes(acc.id)) continue
+          const last = lastFocusedAt.current.get(acc.id)
+          if (!last || now - last <= threshold) continue
+          const lbl = accountLabel(acc)
+          lastFocusedAt.current.delete(acc.id)
+          openedLabels.current.delete(lbl)
+          await closeWebview(lbl).catch(() => {})
+          setWorkspace((cur) => ({
+            ...cur,
+            liveAccountIds: cur.liveAccountIds.filter((x) => x !== acc.id),
+          }))
+        }
+      }
+    }, 5_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  // ── add / remove service ──────────────────────────────────────────────────────
+
+  function handleAddService(e: React.FormEvent) {
+    e.preventDefault()
+    if (!catalogEntry) return
+    const id = `${catalogEntry.type}-${uniqueId()}`
+    const accountId = `${id}-acc`
+    const newService: ChatService = {
+      id,
+      serviceType: catalogEntry.type,
+      name: addLabel.trim() || catalogEntry.name,
+      icon: catalogEntry.icon,
+      color: catalogEntry.color,
+      status: 'healthy',
+      unread: 0,
+      pinned: false,
+      hibernateAfter: null,
+      accounts: [{
+        id: accountId,
+        label: addLabel.trim() || catalogEntry.name,
+        workspace: addLabel.trim() || catalogEntry.name,
+        profile: `profile://${catalogEntry.type}/${slugify(addLabel || catalogEntry.name)}`,
+        serviceUrl: addUrl.trim() || catalogEntry.defaultUrl,
+        health: 'healthy',
+        notifications: 'native',
+        lastSync: '-',
+      }],
+    }
+    setWorkspace((ws) => ({ ...ws, services: [...ws.services, newService] }))
+    setShowAddModal(false)
+    setCatalogEntry(null)
+    setActiveServiceId(newService.id)
+    setActiveAccountId(accountId)
   }
 
-  function selectService(service: ChatService) {
-    updateWorkspace((current) => ({
-      ...current,
-      activeServiceId: service.id,
-      activeAccountId: service.accounts[0]?.id ?? current.activeAccountId,
+  async function handleRemoveService(service: ChatService) {
+    if (!await showConfirm(`Remover "${service.name}" e todas as contas?`)) return
+    for (const acc of service.accounts) {
+      const lbl = accountLabel(acc)
+      openedLabels.current.delete(lbl)
+      await closeWebview(lbl).catch(() => {})
+    }
+    setWorkspace((ws) => ({
+      ...ws,
+      services: ws.services.filter((s) => s.id !== service.id),
+      liveAccountIds: ws.liveAccountIds.filter((id) => !service.accounts.some((a) => a.id === id)),
     }))
+    if (activeServiceId === service.id) {
+      const remaining = workspace.services.filter((s) => s.id !== service.id)
+      setActiveServiceId(remaining[0]?.id ?? null)
+      setActiveAccountId(null)
+    }
+    if (configServiceId === service.id) setConfigServiceId(null)
   }
 
-  function selectAccount(account: ChatAccount) {
-    updateWorkspace((current) => ({
-      ...current,
-      activeAccountId: account.id,
-    }))
-  }
+  // ── add / remove account ──────────────────────────────────────────────────────
 
-  function toggleServicePin(serviceId: string) {
-    updateWorkspace((current) => ({
-      ...current,
-      services: current.services.map((service) =>
-        service.id === serviceId ? { ...service, pinned: !service.pinned } : service,
+  function handleAddAccount(e: React.FormEvent, svc: ChatService) {
+    e.preventDefault()
+    if (!addAccountLabel.trim()) return
+    const accountId = `${svc.id}-${uniqueId()}`
+    const newAccount: ChatAccount = {
+      id: accountId,
+      label: addAccountLabel.trim(),
+      workspace: addAccountLabel.trim(),
+      profile: `profile://${svc.serviceType}/${slugify(addAccountLabel)}`,
+      serviceUrl: addAccountUrl.trim() || svc.accounts[0]?.serviceUrl || '',
+      health: 'healthy',
+      notifications: 'native',
+      lastSync: '-',
+    }
+    setWorkspace((ws) => ({
+      ...ws,
+      services: ws.services.map((s) =>
+        s.id === svc.id ? { ...s, accounts: [...s.accounts, newAccount] } : s,
       ),
     }))
+    setAddAccountSvcId(null)
+    void handleSelectAccount(newAccount)
   }
 
-  function togglePreferences(key: keyof WorkspaceSnapshot['preferences']) {
-    updateWorkspace((current) => ({
-      ...current,
-      preferences: {
-        ...current.preferences,
-        [key]: !current.preferences[key],
-      },
+  async function handleRemoveAccount(svc: ChatService, acc: ChatAccount) {
+    if (!await showConfirm(`Remover conta "${acc.label}"?`)) return
+    const lbl = accountLabel(acc)
+    openedLabels.current.delete(lbl)
+    await closeWebview(lbl).catch(() => {})
+    setWorkspace((ws) => ({
+      ...ws,
+      services: ws.services.map((s) =>
+        s.id === svc.id ? { ...s, accounts: s.accounts.filter((a) => a.id !== acc.id) } : s,
+      ),
+      liveAccountIds: ws.liveAccountIds.filter((id) => id !== acc.id),
+    }))
+    if (activeAccountId === acc.id) {
+      const remaining = svc.accounts.filter((a) => a.id !== acc.id)
+      if (remaining[0]) void handleSelectAccount(remaining[0])
+      else setActiveAccountId(null)
+    }
+  }
+
+  function updateServiceConfig(svcId: string, patch: Partial<Pick<ChatService, 'name' | 'hibernateAfter'>>) {
+    setWorkspace((ws) => ({
+      ...ws,
+      services: ws.services.map((s) => (s.id === svcId ? { ...s, ...patch } : s)),
     }))
   }
 
-  function cycleNotifications(accountId: string) {
-    updateWorkspace((current) => ({
-      ...current,
-      services: current.services.map((service) => ({
-        ...service,
-        accounts: service.accounts.map((account) =>
-          account.id === accountId
-            ? {
-                ...account,
-                notifications: nextNotificationMode(account.notifications),
-              }
-            : account,
-        ),
-      })),
-    }))
-  }
+  // ── render ────────────────────────────────────────────────────────────────────
 
-  function resetWorkspace() {
-    setWorkspace(seedWorkspace)
-  }
-
-  function rememberOpenAccount(accountId: string, isOpen: boolean) {
-    setWorkspace((current) => {
-      const nextLiveAccountIds = isOpen
-        ? Array.from(new Set([...current.liveAccountIds, accountId]))
-        : current.liveAccountIds.filter((candidate) => candidate !== accountId)
-
-      return {
-        ...current,
-        liveAccountIds: nextLiveAccountIds,
-      }
-    })
-  }
-
-  async function handleOpenLiveView(account: ChatAccount) {
-    setRuntimeStatus('opening')
-    setRuntimeMessage(`Abrindo webview real para ${account.label}...`)
-    pushRuntimeEvent(`abrindo webview de ${account.label}`)
-    try {
-      const label = await openAccountWebview(account)
-      const views = await listAccountWebviews()
-      setOpenViews(views)
-      rememberOpenAccount(account.id, true)
-      setRuntimeStatus('ready')
-      setRuntimeMessage(`Webview ${label} ativa com storage isolado para ${account.profile}.`)
-      pushRuntimeEvent(`webview ${label} aberta com isolamento ${account.profile}`)
-    } catch (error) {
-      setRuntimeStatus('error')
-      setRuntimeMessage(error instanceof Error ? error.message : 'falha ao abrir webview')
-      pushRuntimeEvent(`falha ao abrir webview de ${account.label}`)
-    }
-  }
-
-  async function handleCloseLiveView(account: ChatAccount) {
-    try {
-      await closeAccountWebview(account)
-      const views = await listAccountWebviews()
-      setOpenViews(views)
-      rememberOpenAccount(account.id, false)
-      setRuntimeStatus('idle')
-      setRuntimeMessage(`Webview de ${account.label} encerrada.`)
-      pushRuntimeEvent(`webview de ${account.label} encerrada`)
-    } catch (error) {
-      setRuntimeStatus('error')
-      setRuntimeMessage(error instanceof Error ? error.message : 'falha ao fechar webview')
-      pushRuntimeEvent(`falha ao fechar webview de ${account.label}`)
-    }
-  }
-
-  async function handleOpenServiceViews(service: ChatService) {
-    setRuntimeStatus('opening')
-    setRuntimeMessage(`Abrindo ${service.accounts.length} webviews de ${service.name}...`)
-    pushRuntimeEvent(`abertura em lote de ${service.accounts.length} contas de ${service.name}`)
-    try {
-      await openAccountWebviews(service.accounts)
-      const views = await listAccountWebviews()
-      setOpenViews(views)
-      setWorkspace((current) => ({
-        ...current,
-        liveAccountIds: Array.from(
-          new Set([...current.liveAccountIds, ...service.accounts.map((account) => account.id)]),
-        ),
-      }))
-      setRuntimeStatus('ready')
-      setRuntimeMessage(`${service.accounts.length} webviews de ${service.name} ativas.`)
-      pushRuntimeEvent(`${service.accounts.length} webviews de ${service.name} foram abertas`)
-    } catch (error) {
-      setRuntimeStatus('error')
-      setRuntimeMessage(error instanceof Error ? error.message : 'falha ao abrir webviews do servico')
-      pushRuntimeEvent(`falha na abertura em lote de ${service.name}`)
-    }
-  }
-
-  async function handleCloseServiceViews(service: ChatService) {
-    try {
-      await closeAccountWebviews(service.accounts)
-      const views = await listAccountWebviews()
-      setOpenViews(views)
-      setWorkspace((current) => ({
-        ...current,
-        liveAccountIds: current.liveAccountIds.filter(
-          (accountId) => !service.accounts.some((account) => account.id === accountId),
-        ),
-      }))
-      setRuntimeStatus('idle')
-      setRuntimeMessage(`Webviews de ${service.name} encerradas.`)
-      pushRuntimeEvent(`webviews de ${service.name} encerradas em lote`)
-    } catch (error) {
-      setRuntimeStatus('error')
-      setRuntimeMessage(error instanceof Error ? error.message : 'falha ao fechar webviews do servico')
-      pushRuntimeEvent(`falha ao fechar webviews de ${service.name}`)
-    }
-  }
-
-  async function handleSyncRuntime() {
-    try {
-      const views = await listAccountWebviews()
-      setOpenViews(views)
-      setRuntimeStatus(views.length > 0 ? 'ready' : 'idle')
-      setRuntimeMessage(
-        views.length > 0
-          ? `${views.length} webviews reconciliadas manualmente.`
-          : 'Nenhuma webview aberta apos reconciliacao manual.',
-      )
-      pushRuntimeEvent(`reconciliacao manual executada com ${views.length} webviews abertas`)
-    } catch (error) {
-      setRuntimeStatus('error')
-      setRuntimeMessage(error instanceof Error ? error.message : 'falha ao reconciliar runtime')
-      pushRuntimeEvent('falha na reconciliacao manual do runtime')
-    }
-  }
-
-  async function handleCloseAllLiveViews() {
-    const accountsToClose = workspace.services
-      .flatMap((service) => service.accounts)
-      .filter((account) => workspace.liveAccountIds.includes(account.id))
-
-    if (accountsToClose.length === 0) {
-      setRuntimeStatus('idle')
-      setRuntimeMessage('Nenhuma webview persistida para encerrar.')
-      pushRuntimeEvent('nenhuma webview persistida para encerrar')
-      return
-    }
-
-    try {
-      await closeAccountWebviews(accountsToClose)
-      const views = await listAccountWebviews()
-      setOpenViews(views)
-      setWorkspace((current) => ({
-        ...current,
-        liveAccountIds: [],
-      }))
-      setRuntimeStatus('idle')
-      setRuntimeMessage('Todas as webviews persistidas foram encerradas.')
-      pushRuntimeEvent(`encerramento global concluido para ${accountsToClose.length} webviews`)
-    } catch (error) {
-      setRuntimeStatus('error')
-      setRuntimeMessage(error instanceof Error ? error.message : 'falha ao encerrar todas as webviews')
-      pushRuntimeEvent('falha ao encerrar todas as webviews persistidas')
-    }
-  }
-
-  async function handleEnsureTray() {
-    try {
-      const trayId = await ensureTray(() => {
-        setDesktopStatus('tray-ready')
-        setDesktopMessage(`Pulse manual recebido pelo tray em ${new Date().toLocaleTimeString('pt-BR')}.`)
-      })
-      setDesktopStatus('tray-ready')
-      setDesktopMessage(`Tray ${trayId} ativo para o shell do OctoChat.`)
-    } catch (error) {
-      setDesktopStatus('error')
-      setDesktopMessage(error instanceof Error ? error.message : 'falha ao criar tray')
-    }
-  }
-
-  async function handleNotification() {
-    try {
-      await pushDesktopNotification(
-        `OctoChat • ${activeService.name}`,
-        `${activeAccount.label} esta pronto para validar a sessao real.`,
-      )
-      setDesktopStatus('notified')
-      setDesktopMessage(`Notificacao disparada para ${activeAccount.label}.`)
-      pushRuntimeEvent(`notificacao nativa disparada para ${activeAccount.label}`)
-    } catch (error) {
-      setDesktopStatus('error')
-      setDesktopMessage(error instanceof Error ? error.message : 'falha ao disparar notificacao')
-      pushRuntimeEvent(`falha ao disparar notificacao para ${activeAccount.label}`)
-    }
-  }
+  const configService = workspace.services.find((s) => s.id === configServiceId) ?? null
+  const ctxService = ctxMenu ? (workspace.services.find((s) => s.id === ctxMenu.serviceId) ?? null) : null
 
   return (
-    <main className={`app-shell ${workspace.preferences.compactRail ? 'compact-rail' : ''}`}>
-      <section className="hero-panel">
-        <div className="hero-copy">
-          <p className="eyebrow">OctoChat / R0</p>
-          <h1>Shell multichat com contrato real de workspace e sessao.</h1>
-          <p className="summary">
-            O recorte agora sai do mock estatico: servicos, contas, preferencias e foco do
-            operador ficam persistidos localmente. Isso reduz a lacuna entre o shell visual e o
-            runtime Tauri que vai hospedar webviews isoladas por conta.
-          </p>
-        </div>
-        <div className="hero-grid">
-          <article>
-            <span>Servicos fixados</span>
-            <strong>{workspace.services.filter((service) => service.pinned).length}</strong>
-          </article>
-          <article>
-            <span>Contas conectadas</span>
-            <strong>{connectedAccounts}</strong>
-          </article>
-          <article>
-            <span>Unread agregado</span>
-            <strong>{totalUnread}</strong>
-          </article>
-        </div>
-      </section>
+    <div className="app-shell" onClick={() => setCtxMenu(null)}>
 
-      <section className="workspace">
-        <aside className="service-rail">
-          <div className="rail-header">
-            <div>
-              <span>Servicos</span>
-              <strong>{visibleServices.length}</strong>
-            </div>
-            <button className="ghost-button" onClick={() => togglePreferences('compactRail')} type="button">
-              {workspace.preferences.compactRail ? 'Expandir' : 'Compactar'}
+      {/* ── SIDEBAR ───────────────────────────────────────────────────────── */}
+      <aside className="sidebar" data-tauri-drag-region>
+        <div className="sidebar-logo">🐙</div>
+
+        <nav className="sidebar-services">
+          {workspace.services.map((svc) => (
+            <button
+              key={svc.id}
+              className={`service-btn${activeServiceId === svc.id ? ' active' : ''}`}
+              title={svc.name}
+              onClick={(e) => { e.stopPropagation(); handleSelectService(svc) }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setCtxMenu({ serviceId: svc.id, x: e.clientX, y: e.clientY })
+              }}
+            >
+              <div className="service-icon" style={{ background: svc.color }}>{svc.icon}</div>
+              {svc.unread > 0 && (
+                <span className="unread-badge">{svc.unread > 99 ? '99+' : svc.unread}</span>
+              )}
             </button>
-          </div>
+          ))}
+        </nav>
 
-          <label className="search-box">
-            <span>Busca rapida</span>
-            <input
-              onChange={(event) =>
-                updateWorkspace((current) => ({
-                  ...current,
-                  search: event.target.value,
-                }))
-              }
-              placeholder="Slack, suporte, ops..."
-              type="search"
-              value={workspace.search}
-            />
-          </label>
+        <div className="sidebar-bottom">
+          <button
+            className="sidebar-action add"
+            title="Adicionar serviço"
+            onClick={(e) => { e.stopPropagation(); setShowAddModal(true); setCatalogEntry(null) }}
+          >
+            +
+          </button>
+        </div>
+      </aside>
 
-          <div className="service-list">
-            {visibleServices.map((service) => (
-              <article
-                key={service.id}
-                className={`service-card ${service.id === activeService.id ? 'active' : ''}`}
-              >
-                <button className="service-main" onClick={() => selectService(service)} type="button">
-                  <span className="service-badge" style={{ backgroundColor: service.color }}>
-                    {service.icon}
-                  </span>
-                  <span className="service-copy">
-                    <strong>{service.name}</strong>
-                    <small>{statusLabel[service.status]}</small>
-                  </span>
-                  <span className="unread-pill">{service.unread}</span>
-                </button>
-                <button className="pin-toggle" onClick={() => toggleServicePin(service.id)} type="button">
-                  {service.pinned ? 'Fixado' : 'Fixar'}
-                </button>
-                <div className="service-actions">
-                  <button className="pin-toggle secondary" onClick={() => void handleOpenServiceViews(service)} type="button">
-                    Abrir tudo
-                  </button>
-                  <button className="pin-toggle secondary" onClick={() => void handleCloseServiceViews(service)} type="button">
-                    Fechar tudo
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </aside>
-
-        <section className="stage">
-          <header className="stage-header">
-            <div>
-              <p className="eyebrow">Servico ativo</p>
-              <h2>{activeService.name}</h2>
-            </div>
-            <div className={`health health-${activeService.status}`}>{statusLabel[activeService.status]}</div>
-          </header>
-
-          <div className="account-strip">
-            {activeService.accounts.map((account) => (
-              <button
-                key={account.id}
-                className={`account-chip ${account.id === activeAccount.id ? 'active' : ''}`}
-                onClick={() => selectAccount(account)}
-                type="button"
-              >
-                <strong>{account.label}</strong>
-                <span>{account.workspace}</span>
-              </button>
-            ))}
-          </div>
-
-          <article className="webview-stage">
-            <div className="browser-bar">
-              <span className="dot" />
-              <span className="dot" />
-              <span className="dot" />
-              <p>{activeAccount.profile}</p>
-            </div>
-            <div className="webview-body">
-              <div className="mock-pane">
-                <p className="eyebrow">Webview slot</p>
-                <h3>{activeAccount.label}</h3>
-                <p>
-                  A webview final sera anexada a este slot com store/cookies segregados pelo
-                  identificador <code>{activeAccount.profile}</code>.
-                </p>
-                <div className="slot-actions">
-                  <button className="preference-toggle" onClick={() => void handleOpenLiveView(activeAccount)} type="button">
-                    Abrir webview real
-                  </button>
-                  <button className="preference-toggle" onClick={() => void handleCloseLiveView(activeAccount)} type="button">
-                    Fechar webview
-                  </button>
-                </div>
-                <dl className="slot-contract">
-                  <div>
-                    <dt>URL alvo</dt>
-                    <dd>{activeAccount.serviceUrl}</dd>
-                  </div>
-                  <div>
-                    <dt>Workspace</dt>
-                    <dd>{activeAccount.workspace}</dd>
-                  </div>
-                  <div>
-                    <dt>Politica</dt>
-                    <dd>isolamento por conta + reload controlado</dd>
-                  </div>
-                </dl>
+      {/* ── CONTENT ───────────────────────────────────────────────────────── */}
+      <div className="content-area">
+        {activeService ? (
+          <>
+            <header className="content-header">
+              <div className="service-icon sm" style={{ background: activeService.color }}>
+                {activeService.icon}
               </div>
-              {workspace.preferences.showTelemetry ? (
-                <div className="telemetry">
-                  <div>
-                    <span>Saude da sessao</span>
-                    <strong>{statusLabel[activeAccount.health]}</strong>
+              <span className="content-service-name">{activeService.name}</span>
+
+              <div className="account-tabs">
+                {activeService.accounts.map((acc) => (
+                  <button
+                    key={acc.id}
+                    className={`account-tab${acc.id === (activeAccount?.id ?? '') ? ' active' : ''}`}
+                    onClick={() => void handleSelectAccount(acc)}
+                  >
+                    {acc.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="header-actions">
+                <button
+                  className="header-btn"
+                  title="Adicionar conta"
+                  onClick={() => {
+                    setAddAccountSvcId(activeService.id)
+                    setAddAccountLabel('')
+                    setAddAccountUrl(activeService.accounts[0]?.serviceUrl ?? '')
+                  }}
+                >+</button>
+                <button
+                  className={`header-btn${configServiceId === activeService.id ? ' active-btn' : ''}`}
+                  title="Configurar"
+                  onClick={() => setConfigServiceId(configServiceId === activeService.id ? null : activeService.id)}
+                >⚙</button>
+                <button
+                  className="header-btn"
+                  title="Abrir DevTools (F12)"
+                  onClick={() => activeAccount && void openWebviewDevtools(accountLabel(activeAccount)).catch(() => {})}
+                >🔍</button>
+                <button
+                  className="header-btn danger"
+                  title="Remover serviço"
+                  onClick={() => void handleRemoveService(activeService)}
+                >🗑</button>
+              </div>
+
+              {configService?.id === activeService.id && (
+                <div className="config-panel">
+                  <div className="form-field">
+                    <label>Nome</label>
+                    <input
+                      value={configService.name}
+                      onChange={(e) => updateServiceConfig(configService.id, { name: e.target.value })}
+                    />
                   </div>
-                  <div>
-                    <span>Notificacoes</span>
-                    <strong>{notificationLabel[activeAccount.notifications]}</strong>
+                  <div className="form-field">
+                    <label>Hibernar após inatividade</label>
+                    <select
+                      value={configService.hibernateAfter ?? ''}
+                      onChange={(e) =>
+                        updateServiceConfig(configService.id, {
+                          hibernateAfter: e.target.value ? (Number(e.target.value) as HibernateAfter) : null,
+                        })
+                      }
+                    >
+                      <option value="">Nunca</option>
+                      <option value="5">5 min</option>
+                      <option value="15">15 min</option>
+                      <option value="30">30 min</option>
+                      <option value="60">1 hora</option>
+                    </select>
                   </div>
-                  <div>
-                    <span>Ultimo heartbeat</span>
-                    <strong>{activeAccount.lastSync}</strong>
-                  </div>
+                  {activeAccount && (
+                    <button
+                      className="btn btn-danger"
+                      style={{ marginTop: 4 }}
+                      onClick={() => void handleRemoveAccount(activeService, activeAccount)}
+                    >Remover conta ativa</button>
+                  )}
                 </div>
-              ) : null}
-            </div>
-          </article>
-        </section>
+              )}
+            </header>
 
-        <aside className="inspector">
-          <section className="inspector-card">
-            <p className="eyebrow">Operacao</p>
-            <div className="preferences-grid">
-              <button className="preference-toggle" onClick={() => togglePreferences('showTelemetry')} type="button">
-                {workspace.preferences.showTelemetry ? 'Ocultar telemetria' : 'Mostrar telemetria'}
-              </button>
-              <button className="preference-toggle" onClick={() => togglePreferences('focusMode')} type="button">
-                {workspace.preferences.focusMode ? 'Desligar focus mode' : 'Ligar focus mode'}
-              </button>
-              <button
-                className="preference-toggle"
-                onClick={() => togglePreferences('restoreLiveSessions')}
-                type="button"
-              >
-                {workspace.preferences.restoreLiveSessions ? 'Nao restaurar sessoes' : 'Restaurar sessoes'}
-              </button>
-              <button className="preference-toggle danger" onClick={resetWorkspace} type="button">
-                Resetar workspace
-              </button>
+            <div className="webview-area" ref={webviewAreaRef}>
+              {activeAccount && !openedLabels.current.has(accountLabel(activeAccount)) && (
+                <div className="webview-placeholder">
+                  <div className="service-icon lg" style={{ background: activeService.color }}>
+                    {activeService.icon}
+                  </div>
+                  <p>{activeService.name} — {activeAccount.label}</p>
+                  <button className="btn btn-primary" onClick={() => void handleSelectAccount(activeAccount)}>
+                    Abrir
+                  </button>
+                </div>
+              )}
             </div>
-          </section>
-
-          <section className="inspector-card">
-            <p className="eyebrow">Sessao ativa</p>
-            <ul className="detail-list">
-              <li>
-                <span>Profile</span>
-                <strong>{activeAccount.profile}</strong>
-              </li>
-              <li>
-                <span>Storage bucket</span>
-                <strong>{activeAccount.id}</strong>
-              </li>
-              <li>
-                <span>Focus mode</span>
-                <strong>{workspace.preferences.focusMode ? 'Ativo' : 'Normal'}</strong>
-              </li>
-              <li>
-                <span>Restore startup</span>
-                <strong>{workspace.preferences.restoreLiveSessions ? 'Ativo' : 'Desligado'}</strong>
-              </li>
-            </ul>
-            <button className="preference-toggle" onClick={() => cycleNotifications(activeAccount.id)} type="button">
-              Alternar notificacoes
+          </>
+        ) : (
+          <div className="welcome-screen">
+            <div className="logo">🐙</div>
+            <h2>OctoChat</h2>
+            <p>Adicione um serviço para começar.<br />Suporta Slack, WhatsApp, Telegram, Gmail e mais.</p>
+            <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
+              + Adicionar serviço
             </button>
-          </section>
+          </div>
+        )}
+      </div>
 
-          <section className="inspector-card">
-            <p className="eyebrow">Runtime Tauri</p>
-            <div className="preferences-grid">
-              <button className="preference-toggle" onClick={() => void handleSyncRuntime()} type="button">
-                Sincronizar runtime
-              </button>
-              <button className="preference-toggle" onClick={() => void handleCloseAllLiveViews()} type="button">
-                Fechar todas
-              </button>
-            </div>
-            <ul className="detail-list">
-              <li>
-                <span>Status</span>
-                <strong>{runtimeStatus}</strong>
-              </li>
-              <li>
-                <span>Webviews abertas</span>
-                <strong>{openViews.length}</strong>
-              </li>
-              <li>
-                <span>Sessoes persistidas</span>
-                <strong>{workspace.liveAccountIds.length}</strong>
-              </li>
-              <li>
-                <span>Mensagem</span>
-                <strong>{runtimeMessage}</strong>
-              </li>
-            </ul>
-            <div className="event-log">
-              {runtimeEvents.map((event) => (
-                <p key={event}>{event}</p>
-              ))}
-            </div>
-          </section>
+      {/* ── CONTEXT MENU ──────────────────────────────────────────────────── */}
+      {ctxMenu && ctxService && (
+        <ContextMenu
+          menu={ctxMenu}
+          onClose={() => setCtxMenu(null)}
+          onConfig={() => { setConfigServiceId(ctxService.id); handleSelectService(ctxService) }}
+          onAddAccount={() => {
+            setAddAccountSvcId(ctxService.id)
+            setAddAccountLabel('')
+            setAddAccountUrl(ctxService.accounts[0]?.serviceUrl ?? '')
+          }}
+          onRemove={() => void handleRemoveService(ctxService)}
+        />
+      )}
 
-          <section className="inspector-card">
-            <p className="eyebrow">Desktop Shell</p>
-            <div className="preferences-grid">
-              <button className="preference-toggle" onClick={() => void handleEnsureTray()} type="button">
-                Inicializar tray
-              </button>
-              <button className="preference-toggle" onClick={() => void handleNotification()} type="button">
-                Enviar notificacao
-              </button>
-            </div>
-            <ul className="detail-list">
-              <li>
-                <span>Status</span>
-                <strong>{desktopStatus}</strong>
-              </li>
-              <li>
-                <span>Mensagem</span>
-                <strong>{desktopMessage}</strong>
-              </li>
-            </ul>
-          </section>
+      {/* ── ADD SERVICE MODAL ─────────────────────────────────────────────── */}
+      {showAddModal && (
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowAddModal(false) }}>
+          <div className="modal-box">
+            <p className="modal-title">{catalogEntry ? `Configurar ${catalogEntry.name}` : 'Escolha um serviço'}</p>
+            {!catalogEntry ? (
+              <>
+                <div className="catalog-grid">
+                  {serviceCatalog.map((entry) => (
+                    <button
+                      key={entry.type}
+                      className="catalog-card"
+                      onClick={() => { setCatalogEntry(entry); setAddUrl(entry.defaultUrl); setAddLabel(entry.name) }}
+                    >
+                      <div className="catalog-icon" style={{ background: entry.color }}>{entry.icon}</div>
+                      <span className="catalog-name">{entry.name}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="modal-actions">
+                  <button className="btn btn-secondary" onClick={() => setShowAddModal(false)}>Cancelar</button>
+                </div>
+              </>
+            ) : (
+              <form className="modal-form" onSubmit={handleAddService}>
+                <div className="form-field">
+                  <label>Nome / apelido</label>
+                  <input value={addLabel} onChange={(e) => setAddLabel(e.target.value)} placeholder={catalogEntry.name} autoFocus />
+                </div>
+                <div className="form-field">
+                  <label>URL</label>
+                  <input value={addUrl} onChange={(e) => setAddUrl(e.target.value)} placeholder={catalogEntry.defaultUrl} required />
+                </div>
+                <div className="modal-actions">
+                  <button type="button" className="btn btn-secondary" onClick={() => setCatalogEntry(null)}>← Voltar</button>
+                  <button type="submit" className="btn btn-primary">Adicionar</button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
 
-          <section className="inspector-card accent">
-            <p className="eyebrow">Snapshot local</p>
-            <pre>{JSON.stringify(workspace, null, 2)}</pre>
-          </section>
-        </aside>
-      </section>
-    </main>
+      {/* ── ADD ACCOUNT MODAL ─────────────────────────────────────────────── */}
+      {addAccountSvcId && (() => {
+        const svc = workspace.services.find((s) => s.id === addAccountSvcId)
+        if (!svc) return null
+        return (
+          <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setAddAccountSvcId(null) }}>
+            <div className="modal-box">
+              <p className="modal-title">Adicionar conta — {svc.name}</p>
+              <form className="modal-form" onSubmit={(e) => handleAddAccount(e, svc)}>
+                <div className="form-field">
+                  <label>Nome da conta</label>
+                  <input value={addAccountLabel} onChange={(e) => setAddAccountLabel(e.target.value)} placeholder="ex: Trabalho, Pessoal" autoFocus required />
+                </div>
+                <div className="form-field">
+                  <label>URL</label>
+                  <input value={addAccountUrl} onChange={(e) => setAddAccountUrl(e.target.value)} required />
+                </div>
+                <div className="modal-actions">
+                  <button type="button" className="btn btn-secondary" onClick={() => setAddAccountSvcId(null)}>Cancelar</button>
+                  <button type="submit" className="btn btn-primary">Adicionar</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* ── TOAST NOTIFICATIONS ───────────────────────────────────────────── */}
+      <ToastList
+        toasts={toasts}
+        onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
+        onActivate={(serviceId) => {
+          const svc = workspace.services.find((s) => s.id === serviceId)
+          if (svc) handleSelectService(svc)
+        }}
+      />
+
+      {/* ── CONFIRM DIALOG ────────────────────────────────────────────────── */}
+      {confirmDialog && (
+        <ConfirmModal
+          message={confirmDialog.message}
+          onConfirm={() => { confirmDialog.resolve(true); setConfirmDialog(null) }}
+          onCancel={() => { confirmDialog.resolve(false); setConfirmDialog(null) }}
+        />
+      )}
+
+      {/* ── NEW WINDOW DIALOG ─────────────────────────────────────────────── */}
+      {newWinDialog && (
+        <NewWinDialog
+          url={newWinDialog.url}
+          onInApp={() => {
+            void navigateWebview(newWinDialog.label, newWinDialog.url).catch(() => {})
+            setNewWinDialog(null)
+          }}
+          onExternal={() => {
+            void openExternal(newWinDialog.url).catch(() => {})
+            setNewWinDialog(null)
+          }}
+          onCancel={() => setNewWinDialog(null)}
+        />
+      )}
+    </div>
   )
 }
-
-export default App

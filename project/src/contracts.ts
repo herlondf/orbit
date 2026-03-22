@@ -12,14 +12,18 @@ export type ChatAccount = {
   lastSync: string
 }
 
+export type HibernateAfter = 5 | 15 | 30 | 60 | null
+
 export type ChatService = {
   id: string
+  serviceType: string
   name: string
   icon: string
   color: string
   status: HealthState
   unread: number
   pinned: boolean
+  hibernateAfter: HibernateAfter
   accounts: ChatAccount[]
 }
 
@@ -55,12 +59,14 @@ export const seedWorkspace: WorkspaceSnapshot = {
   services: [
     {
       id: 'slack',
+      serviceType: 'slack',
       name: 'Slack',
       icon: 'SL',
       color: '#d46d2a',
       status: 'healthy',
       unread: 18,
       pinned: true,
+      hibernateAfter: null,
       accounts: [
         {
           id: 'slack-hdx',
@@ -86,12 +92,14 @@ export const seedWorkspace: WorkspaceSnapshot = {
     },
     {
       id: 'whatsapp',
+      serviceType: 'whatsapp',
       name: 'WhatsApp',
       icon: 'WA',
       color: '#2e936d',
       status: 'healthy',
       unread: 6,
       pinned: true,
+      hibernateAfter: null,
       accounts: [
         {
           id: 'wa-personal',
@@ -117,12 +125,14 @@ export const seedWorkspace: WorkspaceSnapshot = {
     },
     {
       id: 'discord',
+      serviceType: 'discord',
       name: 'Discord',
       icon: 'DC',
       color: '#456ae6',
       status: 'warning',
       unread: 3,
       pinned: false,
+      hibernateAfter: null,
       accounts: [
         {
           id: 'discord-ops',
@@ -138,12 +148,14 @@ export const seedWorkspace: WorkspaceSnapshot = {
     },
     {
       id: 'gmail',
+      serviceType: 'gmail',
       name: 'Gmail',
       icon: 'GM',
       color: '#b95d4b',
       status: 'offline',
       unread: 24,
       pinned: false,
+      hibernateAfter: null,
       accounts: [
         {
           id: 'gmail-finance',
@@ -159,3 +171,4 @@ export const seedWorkspace: WorkspaceSnapshot = {
     },
   ],
 }
+

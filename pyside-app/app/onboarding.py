@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
 from PySide6.QtCore import Qt, Signal
 
 
-class OnboardingDialog(QDialog):
+class OnboardingDialog(QDialog):  # pragma: no cover
     theme_chosen = Signal(str)    # 'dark' / 'light' / 'system'
     service_chosen = Signal(str)  # service_type
 

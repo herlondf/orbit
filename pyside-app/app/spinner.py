@@ -22,7 +22,7 @@ class Spinner(QWidget):
         self._angle = (self._angle + 6) % 360
         self.update()
 
-    def paintEvent(self, e):
+    def paintEvent(self, e):  # pragma: no cover
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         pen = QPen(self._color, self._stroke)

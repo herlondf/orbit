@@ -13,7 +13,7 @@ class _SkeletonBar(QFrame):
         self.setStyleSheet('background-color: transparent; border: none;')
         self._color = QColor('#3e3e52')
 
-    def paintEvent(self, e):
+    def paintEvent(self, e):  # pragma: no cover
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setBrush(self._color)

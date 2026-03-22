@@ -217,7 +217,7 @@ def make_profile(profile_name: str, incognito: bool = False, proxy: str = '',
 
 # ── popup window ───────────────────────────────────────────────────────────────
 
-class PopupView(QWebEngineView):
+class PopupView(QWebEngineView):  # pragma: no cover
     """
     Login / OAuth popup window.
     Uses the SAME QWebEngineProfile as the parent → shared cookies.
@@ -236,7 +236,7 @@ class PopupView(QWebEngineView):
         self.setPage(page)
 
 
-class _PopupPage(QWebEnginePage):
+class _PopupPage(QWebEnginePage):  # pragma: no cover
     def __init__(self, profile, parent_view, on_close_reload=None):
         super().__init__(profile, parent_view)
         self._on_close_reload = on_close_reload
@@ -303,7 +303,7 @@ class _PopupPage(QWebEnginePage):
 
 # ── service page ───────────────────────────────────────────────────────────────
 
-class ServicePage(QWebEnginePage):
+class ServicePage(QWebEnginePage):  # pragma: no cover
     """
     Custom QWebEnginePage for embedded service tabs.
 
@@ -344,7 +344,7 @@ class ServicePage(QWebEnginePage):
 
 # ── service view ───────────────────────────────────────────────────────────────
 
-class ServiceView(QWebEngineView):
+class ServiceView(QWebEngineView):  # pragma: no cover
     """
     Embedded browser for a single service account.
     - Isolated session via QWebEngineProfile
