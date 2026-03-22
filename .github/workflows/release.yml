@@ -63,7 +63,7 @@ jobs:
           cache-dependency-path: pyside-app/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r pyside-app/requirements.txt pyinstaller cryptography
+        run: pip install -r pyside-app/requirements.txt pyinstaller pytest-qt cryptography
 
       - name: Stamp version into updater.py
         shell: bash
