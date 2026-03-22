@@ -2,7 +2,7 @@
 from __future__ import annotations
 from PySide6.QtCore import (Qt, QPropertyAnimation, QEasingCurve, QByteArray)
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QFrame, QGraphicsOpacityEffect
-from PySide6.QtGui import QColor, QPainter, QColor, QPainter
+from PySide6.QtGui import QColor, QPainter
 
 
 class _SkeletonBar(QFrame):

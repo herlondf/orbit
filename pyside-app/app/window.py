@@ -2902,7 +2902,7 @@ class OrbitWindow(QMainWindow):
         import threading
 
         def run():
-            has_update, latest, url = check_for_update()
+            has_update, latest, url, _dl = check_for_update()
             if has_update:
                 self._tray.showMessage(
                     'Orbit — Atualização disponível',

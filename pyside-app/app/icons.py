@@ -139,7 +139,7 @@ def icon(name: str, size: int = 16, color: str = '#c6d0f5') -> QIcon:
     return QIcon(px)
 
 
-def icon_label(name: str, size: int = 16, color: str = '#c6d0f5') -> 'QLabel':
+def icon_label(name: str, size: int = 16, color: str = '#c6d0f5'):
     """Return a QLabel showing the icon (useful for layouts)."""
     from PySide6.QtWidgets import QLabel
     lbl = QLabel()
