@@ -11,6 +11,7 @@ Usage::
 from __future__ import annotations
 
 import locale as _locale_mod
+import sys as _sys
 
 # ---------------------------------------------------------------------------
 # String catalogue
@@ -154,7 +155,11 @@ _STRINGS: dict[str, dict[str, str]] = {
 def _detect_locale() -> str:
     """Return 'pt' if the system locale is Portuguese, else 'en'."""
     try:
-        loc = _locale_mod.getdefaultlocale()[0] or ''
+        # Python 3.11+ prefers getlocale() over deprecated getdefaultlocale()
+        if _sys.version_info >= (3, 11):
+            loc = _locale_mod.getlocale()[0] or ''
+        else:
+            loc = (_locale_mod.getdefaultlocale()[0] or '')  # type: ignore[attr-defined]
         if loc.lower().startswith('pt'):
             return 'pt'
     except Exception:

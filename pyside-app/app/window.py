@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -3022,8 +3023,10 @@ class OrbitWindow(QMainWindow):
     def _until_tomorrow_minutes(self) -> int:
         import datetime
         now = datetime.datetime.now()
-        tomorrow = (now + datetime.timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
-        return max(1, int((tomorrow - now).total_seconds() / 60))
+        next_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        if next_8am <= now:
+            next_8am += datetime.timedelta(days=1)
+        return max(1, int((next_8am - now).total_seconds() / 60))
 
     def _show_dnd_menu(self):  # pragma: no cover
         menu = QMenu(self)
@@ -3738,8 +3741,10 @@ class OrbitWindow(QMainWindow):
     _STARTUP_NAME = 'Orbit'
 
     def _is_startup_enabled(self) -> bool:
-        import winreg
+        if sys.platform != 'win32':
+            return False
         try:
+            import winreg
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._STARTUP_KEY)
             winreg.QueryValueEx(key, self._STARTUP_NAME)
             winreg.CloseKey(key)
@@ -3748,9 +3753,10 @@ class OrbitWindow(QMainWindow):
             return False
 
     def _set_startup(self, enable: bool):
-        import winreg
-        import sys
+        if sys.platform != 'win32':
+            return
         try:
+            import winreg
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._STARTUP_KEY,
                                  0, winreg.KEY_SET_VALUE)
             if enable:
