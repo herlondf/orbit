@@ -8,9 +8,9 @@ param(
 )
 
 Write-Host ""
-Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║        Orbit — MSIX Installer        ║" -ForegroundColor Cyan
-Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "  ========================================" -ForegroundColor Cyan
+Write-Host "         Orbit - MSIX Installer           " -ForegroundColor Cyan
+Write-Host "  ========================================" -ForegroundColor Cyan
 Write-Host ""
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -40,7 +40,7 @@ if ($CerPath -and (Test-Path $CerPath)) {
     try {
         $cert = Import-Certificate -FilePath $CerPath -CertStoreLocation "Cert:\LocalMachine\Root"
         Import-Certificate -FilePath $CerPath -CertStoreLocation "Cert:\LocalMachine\TrustedPeople" | Out-Null
-        Write-Host "          Certificate imported: $($cert.Subject)" -ForegroundColor Green
+        Write-Host ("          Certificate imported: " + $cert.Subject) -ForegroundColor Green
     } catch {
         Write-Host "          Could not import to LocalMachine (need Admin). Trying CurrentUser..." -ForegroundColor Yellow
         Import-Certificate -FilePath $CerPath -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
@@ -48,7 +48,7 @@ if ($CerPath -and (Test-Path $CerPath)) {
         Write-Host "          Certificate imported to CurrentUser store." -ForegroundColor Green
     }
 } else {
-    Write-Host "Step 1/2: No certificate found — trying unsigned install..." -ForegroundColor Yellow
+    Write-Host "Step 1/2: No certificate found -- trying unsigned install..." -ForegroundColor Yellow
     Write-Host "          If install fails, enable Developer Mode in Windows Settings." -ForegroundColor Yellow
 }
 
@@ -57,14 +57,14 @@ Write-Host "Step 2/2: Installing Orbit MSIX package..." -ForegroundColor Yellow
 try {
     Add-AppxPackage -Path $MsixPath
     Write-Host ""
-    Write-Host "  ✓ Orbit installed successfully!" -ForegroundColor Green
-    Write-Host "    Find it in the Start Menu or run: orbit://" -ForegroundColor Cyan
+    Write-Host "  Orbit installed successfully!" -ForegroundColor Green
+    Write-Host "  Find it in the Start Menu." -ForegroundColor Cyan
 } catch {
     Write-Host ""
-    Write-Host "  Installation failed: $_" -ForegroundColor Red
+    Write-Host ("  Installation failed: " + $_) -ForegroundColor Red
     Write-Host ""
     Write-Host "  Alternatives:" -ForegroundColor Yellow
-    Write-Host "  1. Enable Developer Mode: Settings > Privacy & Security > For developers"
-    Write-Host "  2. Use the MSI installer instead (Orbit-*-win-x64.msi)"
-    Write-Host "  3. Use the portable ZIP (Orbit-*-win-x64.zip)"
+    Write-Host '  1. Enable Developer Mode: Settings > Privacy & Security > For developers'
+    Write-Host '  2. Use the MSI installer instead: Orbit-*-win-x64.msi'
+    Write-Host '  3. Use the portable ZIP: Orbit-*-win-x64.zip'
 }
