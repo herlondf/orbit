@@ -2,6 +2,8 @@
 # Uses makeappx.exe from Windows SDK
 # Run from repo root: powershell -File installer/build_msix.ps1
 
+param([string]$DistPath = "")
+
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
@@ -11,9 +13,17 @@ Write-Host "  ╚═════════════════════
 Write-Host ""
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$distPath = Join-Path $repoRoot "dist\Orbit"
+if ($DistPath -eq "") {
+    $distPath = Join-Path $repoRoot "dist\Orbit"
+} else {
+    $distPath = $DistPath
+}
 $outputDir = Join-Path $repoRoot "dist"
 $msixStagingDir = Join-Path $outputDir "msix_staging"
+
+Write-Host "Repo root : $repoRoot"
+Write-Host "Dist path : $distPath"
+Write-Host "Output dir: $outputDir"
 
 if (-not (Test-Path (Join-Path $distPath "Orbit.exe"))) {
     Write-Error "dist\Orbit\Orbit.exe not found. Run build_pyinstaller.ps1 first."
@@ -151,11 +161,19 @@ Write-Host "[4/5] Packaging MSIX..." -ForegroundColor Yellow
 $makeappx = $null
 $sdkPaths = @(
     "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\makeappx.exe",
-    "${env:ProgramFiles}\Windows Kits\10\bin\*\x64\makeappx.exe"
+    "${env:ProgramFiles}\Windows Kits\10\bin\*\x64\makeappx.exe",
+    "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe",
+    "C:\Program Files\Windows Kits\10\bin\*\x64\makeappx.exe"
 )
 foreach ($pattern in $sdkPaths) {
-    $found = Get-Item $pattern -ErrorAction SilentlyContinue | Sort-Object -Descending | Select-Object -First 1
+    $found = Get-Item $pattern -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
     if ($found) { $makeappx = $found.FullName; break }
+}
+
+# Also try finding via where.exe (PATH)
+if (-not $makeappx) {
+    $fromPath = & where.exe makeappx.exe 2>$null | Select-Object -First 1
+    if ($fromPath) { $makeappx = $fromPath }
 }
 
 $msixOutput = Join-Path $outputDir "Orbit-Setup.msix"
@@ -164,17 +182,12 @@ if ($makeappx) {
     Write-Host "       Using: $makeappx"
     & $makeappx pack /d "$msixStagingDir" /p "$msixOutput" /o
 } else {
-    Write-Host "       Trying makeappx from PATH..." -ForegroundColor Yellow
-    try {
-        makeappx pack /d "$msixStagingDir" /p "$msixOutput" /o
-    } catch {
-        Write-Error @"
+    Write-Error @"
 makeappx.exe not found. Install Windows 10/11 SDK:
   winget install Microsoft.WindowsSDK
 Or download from: https://developer.microsoft.com/windows/downloads/windows-sdk/
 "@
-        exit 1
-    }
+    exit 1
 }
 
 if ($LASTEXITCODE -ne 0) { Write-Error "makeappx failed"; exit 1 }

@@ -1,7 +1,10 @@
 # Orbit — MSI Installer Builder using WiX v4
 # Run from repo root: powershell -File installer/build_msi.ps1
 
-param([string]$Version = "1.0.0")
+param(
+    [string]$Version = "1.0.0",
+    [string]$DistPath = ""
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -12,9 +15,17 @@ Write-Host "  ╚═════════════════════
 Write-Host ""
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$distPath = Join-Path $repoRoot "dist\Orbit"
+if ($DistPath -eq "") {
+    $distPath = Join-Path $repoRoot "dist\Orbit"
+} else {
+    $distPath = $DistPath
+}
 $outputDir = Join-Path $repoRoot "dist"
 $installerDir = Join-Path $repoRoot "installer"
+
+Write-Host "Repo root : $repoRoot"
+Write-Host "Dist path : $distPath"
+Write-Host "Output dir: $outputDir"
 
 if (-not (Test-Path (Join-Path $distPath "Orbit.exe"))) {
     Write-Error "dist\Orbit\Orbit.exe not found. Run build_pyinstaller.ps1 first."

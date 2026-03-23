@@ -115,29 +115,52 @@ jobs:
           $version = "${{ needs.prepare.outputs.version }}"
           Compress-Archive -Path "dist\Orbit\*" -DestinationPath "Orbit-${version}-win-x64.zip"
 
+      - name: Debug - List dist directory
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Write-Host "CWD: $PWD"
+          if (Test-Path "dist\Orbit") {
+            Get-ChildItem "dist\Orbit" | Select-Object Name, Length | Format-Table
+          } else {
+            Write-Host "dist\Orbit does not exist"
+          }
+
       - name: Build MSI (WiX v4)
         shell: pwsh
         continue-on-error: true
         run: |
-          dotnet tool install --global wix 2>$null; $null
-          if (Get-Command wix -ErrorAction SilentlyContinue) {
-            & powershell -File installer\build_msi.ps1 -Version "${{ needs.prepare.outputs.version }}"
-            if (Test-Path "dist\Orbit-Setup.msi") {
-              $version = "${{ needs.prepare.outputs.version }}"
-              Move-Item "dist\Orbit-Setup.msi" "Orbit-${version}-win-x64.msi"
-            }
+          # Install WiX v4 as global dotnet tool
+          dotnet tool install --global wix 2>&1 | Write-Host
+          # Refresh PATH so wix.exe is found in the current session
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
+            Write-Host "WiX not available after install — skipping MSI"
+            exit 0
+          }
+          Write-Host "WiX version: $(wix --version)"
+          $distPath = Join-Path $PWD "dist\Orbit"
+          & pwsh -File installer\build_msi.ps1 -Version "${{ needs.prepare.outputs.version }}" -DistPath $distPath
+          if (Test-Path "dist\Orbit-Setup.msi") {
+            $version = "${{ needs.prepare.outputs.version }}"
+            Move-Item "dist\Orbit-Setup.msi" "Orbit-${version}-win-x64.msi"
+            Write-Host "MSI ready: Orbit-${version}-win-x64.msi"
           } else {
-            Write-Host "WiX not available — skipping MSI" -ForegroundColor Yellow
+            Write-Host "MSI output not found after build"
           }
 
       - name: Build MSIX
         shell: pwsh
         continue-on-error: true
         run: |
-          & powershell -File installer\build_msix.ps1
+          $distPath = Join-Path $PWD "dist\Orbit"
+          & pwsh -File installer\build_msix.ps1 -DistPath $distPath
           if (Test-Path "dist\Orbit-Setup.msix") {
             $version = "${{ needs.prepare.outputs.version }}"
             Move-Item "dist\Orbit-Setup.msix" "Orbit-${version}-win-x64.msix"
+            Write-Host "MSIX ready: Orbit-${version}-win-x64.msix"
+          } else {
+            Write-Host "MSIX output not found after build"
           }
 
       - name: Copy update manifest to release root
