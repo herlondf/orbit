@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="pyside-app/assets/icon.ico" alt="Orbit" width="96" />
+  <img src="pyside-app/resources/icon.png" alt="Orbit" width="96" />
 </p>
 
 <h1 align="center">Orbit</h1>

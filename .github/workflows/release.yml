@@ -75,6 +75,7 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --noconfirm --onedir --name Orbit --noconsole `
+            --icon pyside-app\resources\icon.ico `
             --workpath build --distpath dist `
             --add-data "pyside-app\assets;assets" `
             --add-data "pyside-app\resources;resources" `
@@ -162,6 +163,11 @@ jobs:
           } else {
             Write-Host "MSIX output not found after build"
           }
+          # Copy public cert and install helper script alongside MSIX
+          if (Test-Path "dist\Orbit-Dev.cer") {
+            Copy-Item "dist\Orbit-Dev.cer" "Orbit-Dev.cer"
+          }
+          Copy-Item "installer\install-orbit.ps1" "install-orbit.ps1"
 
       - name: Copy update manifest to release root
         shell: pwsh
@@ -178,6 +184,8 @@ jobs:
             Orbit-*.zip
             Orbit-*.msi
             Orbit-*.msix
+            Orbit-Dev.cer
+            install-orbit.ps1
             latest.json
 
   # ── Create GitHub Release ──────────────────────────────────────────
@@ -211,10 +219,18 @@ jobs:
 
             | File | Description |
             |------|-------------|
-            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.zip` | Portable — unzip and run |
-            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.msi` | MSI Installer (Windows 10+) |
-            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.msix` | MSIX (Windows 11) |
-            | `latest.json` | Update manifest |
+            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.zip` | 📦 Portable — unzip and run `Orbit.exe` |
+            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.msi` | 🔧 MSI Installer (Windows 10+, recommended) |
+            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.msix` | 📱 MSIX package (Windows 10/11) |
+            | `install-orbit.ps1` | ⚙️ MSIX install helper (imports cert + installs) |
+            | `Orbit-Dev.cer` | 🔑 Developer certificate (needed for MSIX) |
+            | `latest.json` | 🔄 Update manifest |
+
+            ### Installing MSIX
+            Download `Orbit-Dev.cer`, `Orbit-*.msix` and `install-orbit.ps1` to the same folder, then:
+            ```powershell
+            powershell -ExecutionPolicy Bypass -File install-orbit.ps1
+            ```
 
             ### Update from the app
             Orbit will notify you of this update automatically.

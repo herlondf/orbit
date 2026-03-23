@@ -192,40 +192,46 @@ Or download from: https://developer.microsoft.com/windows/downloads/windows-sdk/
 
 if ($LASTEXITCODE -ne 0) { Write-Error "makeappx failed"; exit 1 }
 
-# ── [5/5] Sign (self-signed dev cert) ────────────────────────────────
-Write-Host "[5/5] Signing (self-signed for development)..." -ForegroundColor Yellow
+# ── [5/5] Sign + export public cert for end-user trust ───────────────
+Write-Host "[5/5] Signing with self-signed certificate..." -ForegroundColor Yellow
 
 $signtool = $null
 $signtoolPaths = @(
     "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe",
-    "${env:ProgramFiles}\Windows Kits\10\bin\*\x64\signtool.exe"
+    "${env:ProgramFiles}\Windows Kits\10\bin\*\x64\signtool.exe",
+    "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe"
 )
 foreach ($pattern in $signtoolPaths) {
-    $found = Get-Item $pattern -ErrorAction SilentlyContinue | Sort-Object -Descending | Select-Object -First 1
+    $found = Get-Item $pattern -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
     if ($found) { $signtool = $found.FullName; break }
 }
 
 if ($signtool) {
     $certPath = Join-Path $outputDir "Orbit-Dev.pfx"
-    if (-not (Test-Path $certPath)) {
-        Write-Host "       Creating self-signed certificate..."
-        $cert = New-SelfSignedCertificate `
-            -Type Custom `
-            -Subject "CN=HDX Software" `
-            -KeyUsage DigitalSignature `
-            -FriendlyName "Orbit Dev Certificate" `
-            -CertStoreLocation "Cert:\CurrentUser\My" `
-            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+    $cerPath  = Join-Path $outputDir "Orbit-Dev.cer"
 
-        $pwd = ConvertTo-SecureString -String "OrbitDev2024!" -Force -AsPlainText
-        Export-PfxCertificate -Cert $cert -FilePath $certPath -Password $pwd | Out-Null
-        Write-Host "       Certificate saved: $certPath"
-    }
+    Write-Host "       Creating self-signed certificate..."
+    $cert = New-SelfSignedCertificate `
+        -Type Custom `
+        -Subject "CN=HDX Software" `
+        -KeyUsage DigitalSignature `
+        -FriendlyName "Orbit Dev Certificate" `
+        -CertStoreLocation "Cert:\CurrentUser\My" `
+        -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+
+    # Export PFX (private) for signing
+    $pwd = ConvertTo-SecureString -String "OrbitDev2024!" -Force -AsPlainText
+    Export-PfxCertificate -Cert $cert -FilePath $certPath -Password $pwd | Out-Null
+
+    # Export CER (public key only) — this is safe to ship with the release
+    Export-Certificate -Cert $cert -FilePath $cerPath -Type CERT | Out-Null
+    Write-Host "       Certificate PFX: $certPath"
+    Write-Host "       Certificate CER: $cerPath (include in release for user trust)"
 
     & $signtool sign /fd SHA256 /a /f "$certPath" /p "OrbitDev2024!" "$msixOutput"
-    Write-Host "       Signed with dev certificate" -ForegroundColor Green
+    Write-Host "       Signed OK" -ForegroundColor Green
 } else {
-    Write-Host "       signtool.exe not found — MSIX is unsigned (install Windows SDK to sign)" -ForegroundColor Yellow
+    Write-Host "       signtool.exe not found — MSIX left unsigned" -ForegroundColor Yellow
 }
 
 if (Test-Path $msixOutput) {
@@ -235,8 +241,7 @@ if (Test-Path $msixOutput) {
     Write-Host "  Path: $msixOutput"
     Write-Host "  Size: $([math]::Round($size, 1)) MB"
     Write-Host ""
-    Write-Host "To install (dev): Add-AppxPackage -Path `"$msixOutput`"" -ForegroundColor Cyan
-    Write-Host "For production: sign with a trusted certificate and submit to Microsoft Store" -ForegroundColor Cyan
+    Write-Host "To install: run install-orbit.ps1 (imports cert + installs MSIX)" -ForegroundColor Cyan
 } else {
     Write-Error "MSIX build failed"
     exit 1

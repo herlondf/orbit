@@ -129,7 +129,7 @@ $harvestPath = Join-Path $installerDir "DistFiles.wxs"
 wix harvest dir "$distPath" `
     --name DistFiles `
     --var DistDir `
-    --directory-ref INSTALLFOLDER `
+    --directoryref INSTALLFOLDER `
     --out "$harvestPath" `
     --nologo
 
