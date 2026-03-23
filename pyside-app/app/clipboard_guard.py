@@ -7,7 +7,6 @@ configurable timeout to reduce accidental data exposure.
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtGui import QClipboard
 from PySide6.QtWidgets import QApplication
 
 

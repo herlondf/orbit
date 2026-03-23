@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Literal
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QByteArray, QPoint
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QApplication, QGraphicsOpacityEffect
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QGraphicsOpacityEffect
 
 ToastKind = Literal['info', 'success', 'error', 'warning']
 

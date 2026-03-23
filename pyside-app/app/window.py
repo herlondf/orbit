@@ -13,7 +13,6 @@ from PySide6.QtGui import (
     QIcon,
     QLinearGradient,
     QPainter,
-    QPainterPath,
     QPen,
     QPixmap,
     QKeySequence,
@@ -51,19 +50,18 @@ from .dialogs import (
 from .encryption import (
     clear_session_password,
     encrypt_file,
-    get_session_password,
     hash_password,
     is_encrypted,
     set_session_password,
     verify_password_hash,
 )
 from .models import Account, Service, ServiceGroup, Workspace
-from .storage import load_services, save_services, load_settings, save_settings, load_workspaces, save_workspaces, load_shortcuts, save_shortcuts
-from .theme import get_tokens, ACCENTS, ThemeMode
+from .storage import load_settings, save_settings, load_workspaces, save_workspaces, load_shortcuts, save_shortcuts
+from .theme import get_tokens, ACCENTS
 from . import gist_sync as _gist_sync
 from .importer import import_rambox, import_ferdium
 from .webview import ServiceView, _GOOGLE_TYPES, set_ad_block
-from .cookie_bridge import import_google_cookies, is_browser_running, find_browser
+from .cookie_bridge import import_google_cookies, is_browser_running
 from .stats import record_session, get_weekly_totals, fmt_duration
 from .icons import IconFetcher, get_cached_pixmap, icon as svg_icon
 from .sounds import play_sound
@@ -79,7 +77,6 @@ from .onboarding import OnboardingDialog
 from .hover_effect import apply_hover_effect
 from .toast import ToastManager
 from .focus_profiles import (
-    PROFILES as _FOCUS_PROFILES,
     PROFILE_LABELS as _PROFILE_LABELS,
     PROFILE_ORDER as _PROFILE_ORDER,
     get_active_profile as _get_focus_profile,
@@ -91,7 +88,7 @@ from .focus_profiles import (
     save_profile_to_settings as _save_focus_profile,
 )
 from .audit_log import log_event as _log_event
-from .i18n import t as _t, set_locale as _set_locale, available_locales as _available_locales
+from .i18n import t as _t
 
 # ── Theme system (delegates to app/theme.py) ─────────────────────────────────
 # ── Custom sidebar button ──────────────────────────────────────────────────────
@@ -349,7 +346,7 @@ class _RichTooltip(QWidget):  # pragma: no cover
         self.setStyleSheet('background:#313244; border-radius:8px; border:1px solid #45475a;')
 
     def show_for(self, service, btn_global_rect):
-        from PySide6.QtCore import QRect, QPoint
+        from PySide6.QtCore import QRect
         self._name_lbl.setText(service.name)
         if service.unread > 0:
             self._badge_lbl.setText(f'🔴 {service.unread} não lida(s)')
@@ -618,7 +615,7 @@ class OrbitWindow(QMainWindow):
         self._auto_lock_timer.start(60_000)
 
         # ── Workspace schedule ───────────────────────────────────────────────
-        from .workspace_schedule import load_schedule, get_active_workspace_id as _get_active_ws_id
+        from .workspace_schedule import load_schedule
         self._ws_schedule = load_schedule()
         self._schedule_timer = QTimer(self)
         self._schedule_timer.setInterval(60_000)
@@ -691,7 +688,6 @@ class OrbitWindow(QMainWindow):
         # Close search bar on Escape
         if event.type() == QEvent.KeyPress and hasattr(self, '_search_bar'):
             if obj is self._search_bar:
-                from PySide6.QtGui import QKeyEvent
                 if event.key() == Qt.Key_Escape:
                     self._hide_service_search()
                     return True
@@ -700,7 +696,7 @@ class OrbitWindow(QMainWindow):
     # ── window setup ─────────────────────────────────────────────────────────────
 
     def _setup_shortcuts(self):  # pragma: no cover
-        from PySide6.QtGui import QShortcut, QKeySequence
+        from PySide6.QtGui import QShortcut
         sc = load_shortcuts()
         for i in range(9):
             s = QShortcut(QKeySequence(f'Ctrl+{i+1}'), self)
@@ -2206,7 +2202,8 @@ class OrbitWindow(QMainWindow):
 
     def _sync_chrome_cookies(self, service: Service):  # pragma: no cover
         """Import Google cookies from any browser and reload views for this service."""
-        import subprocess, time
+        import subprocess
+        import time
         from PySide6.QtWidgets import QMessageBox
         from .cookie_bridge import find_all_browsers
 
@@ -2280,14 +2277,14 @@ class OrbitWindow(QMainWindow):
 
     def _export_backup(self):  # pragma: no cover
         import zipfile
-        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from PySide6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getSaveFileName(
             self, 'Exportar configurações', 'orbit-backup.zip',
             'ZIP Files (*.zip)'
         )
         if not path:
             return
-        from .storage import STORAGE_DIR, _WORKSPACES_FILE, _SETTINGS_FILE
+        from .storage import STORAGE_DIR
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for fname in ['workspaces.json', 'settings.json']:
                 fpath = os.path.join(STORAGE_DIR, fname)
@@ -2508,7 +2505,8 @@ class OrbitWindow(QMainWindow):
             def run():
                 try:
                     from .storage import _WORKSPACES_FILE, _SETTINGS_FILE
-                    import json as _json, os as _os
+                    import json as _json
+                    import os as _os
                     ws_data = _json.loads(open(_WORKSPACES_FILE, encoding='utf-8').read()) if _os.path.exists(_WORKSPACES_FILE) else []
                     s_data = _json.loads(open(_SETTINGS_FILE, encoding='utf-8').read()) if _os.path.exists(_SETTINGS_FILE) else {}
                     bundle = _json.dumps({'workspaces': ws_data, 'settings': s_data}, ensure_ascii=False, indent=2)
@@ -2800,7 +2798,6 @@ class OrbitWindow(QMainWindow):
             edit.setReadOnly(True)
 
             def make_handler(e=edit):
-                from PySide6.QtGui import QKeySequence
                 def keyPressEvent(event):
                     key = event.key()
                     mods = event.modifiers()
@@ -3039,8 +3036,7 @@ class OrbitWindow(QMainWindow):
 
     def _show_quiet_hours_dialog(self):  # pragma: no cover
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QCheckBox,
-                                        QTimeEdit, QDialogButtonBox, QLabel, QGroupBox,
-                                        QGridLayout)
+                                        QTimeEdit, QDialogButtonBox, QLabel, QGroupBox)
         from PySide6.QtCore import QTime
         settings = load_settings()
         qh = settings.get('quiet_hours', {})
@@ -3384,7 +3380,8 @@ class OrbitWindow(QMainWindow):
     def _register_url_scheme(self):  # pragma: no cover
         """Register orbit:// URL scheme in Windows registry."""
         try:
-            import winreg, sys
+            import winreg
+            import sys
             exe = sys.executable
             key_path = r'Software\Classes\Orbit'
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
@@ -3751,7 +3748,8 @@ class OrbitWindow(QMainWindow):
             return False
 
     def _set_startup(self, enable: bool):
-        import winreg, sys
+        import winreg
+        import sys
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._STARTUP_KEY,
                                  0, winreg.KEY_SET_VALUE)
@@ -3773,8 +3771,7 @@ class OrbitWindow(QMainWindow):
     # ── command palette ───────────────────────────────────────────────────────
 
     def _show_palette(self):  # pragma: no cover
-        from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout, QLabel
-        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 
         dlg = QDialog(self)
         dlg.setWindowTitle('Navegar')

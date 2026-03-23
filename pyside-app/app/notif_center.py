@@ -2,10 +2,9 @@
 from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QComboBox, QSizePolicy,
+    QScrollArea, QFrame, QComboBox,
 )
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect, QSize
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect
 
 
 class NotifEntryWidget(QFrame):

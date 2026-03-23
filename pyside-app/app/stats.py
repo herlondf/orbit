@@ -1,6 +1,7 @@
 """stats.py — Usage time tracking for Orbit services."""
 from __future__ import annotations
-import json, os, time
+import json
+import os
 from datetime import datetime
 from .storage import STORAGE_DIR
 

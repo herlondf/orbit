@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QObject, QUrl, Signal, Qt, QByteArray, QSize
+from PySide6.QtCore import QObject, QUrl, Signal, Qt, QByteArray
 from PySide6.QtGui import QPixmap, QIcon, QPainter
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtSvg import QSvgRenderer

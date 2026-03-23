@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from typing import Optional
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -146,17 +147,14 @@ def verify_password_hash(password: str, stored_hash: str) -> bool:
     return hash_password(password) == stored_hash
 
 
-import sys as _sys
-import os as _os
-
-_DPAPI_KEY_FILE = _os.path.join(
-    _os.environ.get('APPDATA', _os.path.expanduser('~')), 'Orbit', 'dpapi.key'
+_DPAPI_KEY_FILE = os.path.join(
+    os.environ.get('APPDATA', os.path.expanduser('~')), 'Orbit', 'dpapi.key'
 )
 
 
 def dpapi_protect(data: bytes) -> bytes:
     """Protect bytes using Windows DPAPI. Returns unchanged on non-Windows."""
-    if _sys.platform != 'win32':
+    if sys.platform != 'win32':
         return data
     try:
         import win32crypt
@@ -167,7 +165,7 @@ def dpapi_protect(data: bytes) -> bytes:
 
 def dpapi_unprotect(data: bytes) -> bytes:
     """Unprotect DPAPI-protected bytes. Returns unchanged on non-Windows."""
-    if _sys.platform != 'win32':
+    if sys.platform != 'win32':
         return data
     try:
         import win32crypt
@@ -180,14 +178,14 @@ def dpapi_unprotect(data: bytes) -> bytes:
 def save_dpapi_key(key: bytes) -> None:
     """Save a key blob protected by DPAPI."""
     protected = dpapi_protect(key)
-    _os.makedirs(_os.path.dirname(_DPAPI_KEY_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(_DPAPI_KEY_FILE), exist_ok=True)
     with open(_DPAPI_KEY_FILE, 'wb') as f:
         f.write(protected)
 
 
 def load_dpapi_key() -> bytes | None:
     """Load and unprotect a DPAPI key blob. Returns None if not found."""
-    if not _os.path.exists(_DPAPI_KEY_FILE):
+    if not os.path.exists(_DPAPI_KEY_FILE):
         return None
     try:
         with open(_DPAPI_KEY_FILE, 'rb') as f:

@@ -2,7 +2,6 @@ import hashlib
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel,
     QPushButton, QGridLayout)
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QFont
 from .biometric import WindowsHello
 
 
