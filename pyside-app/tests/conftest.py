@@ -1,3 +1,4 @@
+import gc
 import pytest
 import sys
 import os
@@ -5,6 +6,8 @@ from unittest.mock import MagicMock, patch
 
 # Suppress all real system tray notifications during tests
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+# Prevent QtWebEngine Chromium sandbox/GPU segfault in headless CI
+os.environ.setdefault('QTWEBENGINE_CHROMIUM_FLAGS', '--no-sandbox --disable-gpu --disable-software-rasterizer')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -16,6 +19,19 @@ def _suppress_tray_notifications(monkeypatch):
         from PySide6.QtWidgets import QSystemTrayIcon
         monkeypatch.setattr(QSystemTrayIcon, 'showMessage', lambda *a, **kw: None)
         monkeypatch.setattr(QSystemTrayIcon, 'show', lambda *a, **kw: None)
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _webengine_cleanup(request, qapp):
+    """Force WebEngine page/profile cleanup after each test to prevent segfaults."""
+    yield
+    try:
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+        gc.collect()
+        QApplication.processEvents()
     except Exception:
         pass
 

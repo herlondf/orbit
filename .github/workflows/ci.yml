@@ -66,6 +66,8 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONDONTWRITEBYTECODE: "1"
+          QTWEBENGINE_CHROMIUM_FLAGS: "--no-sandbox --disable-gpu --disable-software-rasterizer"
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
         run: pytest tests/ -q --timeout=60 --tb=short
 
       - name: Import check
