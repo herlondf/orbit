@@ -5,7 +5,8 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QSize, QEvent, QRect, QUrl, Signal, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QPoint, QSize, QEvent, QRect, QUrl, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -18,6 +19,21 @@ from PySide6.QtGui import (
     QPixmap,
     QKeySequence,
 )
+
+
+def _orbit_logo_pixmap(size: int) -> QPixmap:
+    """Render the Orbit SVG icon to a QPixmap of the given square size."""
+    svg_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'resources', 'icon.svg')
+    px = QPixmap(size, size)
+    px.fill(Qt.transparent)
+    if os.path.exists(svg_path):
+        from PySide6.QtCore import QByteArray
+        renderer = QSvgRenderer(QByteArray(open(svg_path, 'rb').read()))
+        p = QPainter(px)
+        p.setRenderHint(QPainter.Antialiasing)
+        renderer.render(p, QRect(0, 0, size, size))
+        p.end()
+    return px
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -28,6 +44,8 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QPushButton,
@@ -35,6 +53,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStackedWidget,
+    QStyledItemDelegate,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -62,7 +81,6 @@ from .theme import get_tokens, ACCENTS
 from . import gist_sync as _gist_sync
 from .importer import import_rambox, import_ferdium
 from .webview import ServiceView, _GOOGLE_TYPES, set_ad_block
-from .cookie_bridge import import_google_cookies, is_browser_running
 from .stats import record_session, get_weekly_totals, fmt_duration
 from .icons import IconFetcher, get_cached_pixmap, icon as svg_icon
 from .sounds import play_sound
@@ -77,6 +95,7 @@ from .lock_screen import LockScreen, hash_pin
 from .onboarding import OnboardingDialog
 from .hover_effect import apply_hover_effect
 from .toast import ToastManager
+from .lottie_widget import LottieLabel
 from .focus_profiles import (
     PROFILE_LABELS as _PROFILE_LABELS,
     PROFILE_ORDER as _PROFILE_ORDER,
@@ -91,216 +110,239 @@ from .focus_profiles import (
 from .audit_log import log_event as _log_event
 from .i18n import t as _t
 
+# ── Splash progress hook — set by main.py before creating OrbitWindow ─────────
+# Calling this triggers a processEvents() so the animated splash keeps moving.
+_splash_tick: 'Optional[callable]' = None
+
+def _tick() -> None:
+    if _splash_tick is not None:
+        _splash_tick()
+
 # ── Theme system (delegates to app/theme.py) ─────────────────────────────────
 # ── Custom sidebar button ──────────────────────────────────────────────────────
 
-class ServiceButton(QPushButton):  # pragma: no cover
+# ── Sidebar service data roles ─────────────────────────────────────────────────
+_ROLE_SVC    = Qt.UserRole
+_ROLE_BADGE  = Qt.UserRole + 1
+_ROLE_STATUS = Qt.UserRole + 2
+_ROLE_PIXMAP = Qt.UserRole + 3
+_ROLE_SEP    = Qt.UserRole + 4   # group-header text (str) or None
+
+_STATUS_COLORS = {
+    'loading': '#fab387',
+    'ready':   '#a6e3a1',
+    'error':   '#f38ba8',
+    'online':  '#a6e3a1',
+    'slow':    '#f9e2af',
+    'offline': '#f38ba8',
+}
+
+
+class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
     """
-    Sidebar button: coloured icon square + unread badge + active ring.
-    Drawn entirely in paintEvent to avoid layout complexity.
+    Renders each service row inside the sidebar QListWidget.
+    Eliminates the paintEvent-per-widget approach that caused vertical clipping.
     """
 
-    hovered = Signal(bool)
-
-    def __init__(self, service: Service, compact: bool = True, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.service = service
-        self._compact = compact
-        self._pixmap: Optional[QPixmap] = None
-        if compact:
-            self.setFixedSize(52, 52)
+        self.compact: bool = True
+        self.accent: str = '#cba6f7'
+        # Active bar animation: animates width 0→3 when item selected
+        self._bar_width: float = 3.0
+        self._bar_anim = QPropertyAnimation(self, b'bar_width')
+        self._bar_anim.setDuration(200)
+        self._bar_anim.setEasingCurve(QEasingCurve.OutCubic)
+        # Hover float animation: sine-wave oscillation while cursor is over a row
+        self._hover_offsets: dict[int, float] = {}
+        self._hover_phases: dict[int, float] = {}
+        self._hover_row: int = -1
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(16)  # ~60 fps
+        self._hover_timer.timeout.connect(self._tick_hover)
+        self._hover_timer.start()
+
+    def _get_bar_width(self) -> float:
+        return self._bar_width
+
+    def _set_bar_width(self, v: float):
+        self._bar_width = v
+        if self.parent():
+            self.parent().viewport().update()
+
+    bar_width = Property(float, _get_bar_width, _set_bar_width)
+
+    def animate_selection(self):
+        """Trigger the accent bar width animation (call when selection changes)."""
+        self._bar_anim.stop()
+        self._bar_anim.setStartValue(0.0)
+        self._bar_anim.setEndValue(3.0)
+        self._bar_anim.start()
+
+    def set_hovered_row(self, row: int) -> None:
+        """Called by the parent list when mouse moves over a row."""
+        self._hover_row = row
+
+    def _tick_hover(self) -> None:
+        """Oscillate icon Y with a sine wave while hovered; decay smoothly on leave."""
+        import math
+        from PySide6.QtGui import QCursor
+        lw = self.parent()
+        if lw:
+            pos = lw.viewport().mapFromGlobal(QCursor.pos())
+            item = lw.itemAt(pos)
+            self._hover_row = lw.row(item) if item else -1
+
+        rows_to_process = set(self._hover_phases.keys())
+        if self._hover_row >= 0:
+            rows_to_process.add(self._hover_row)
+
+        changed = False
+        for row in list(rows_to_process):
+            if row == self._hover_row:
+                # Advance sine phase — 0.10 rad/tick ≈ ~1 cycle/sec at 60 fps
+                phase = self._hover_phases.get(row, 0.0) + 0.10
+                self._hover_phases[row] = phase
+                self._hover_offsets[row] = math.sin(phase) * 4.0  # ±4 px
+                changed = True
+            else:
+                # Smooth exponential decay back to 0
+                current = self._hover_offsets.get(row, 0.0)
+                if abs(current) < 0.15:
+                    self._hover_offsets.pop(row, None)
+                    self._hover_phases.pop(row, None)
+                else:
+                    self._hover_offsets[row] = current * 0.80
+                    changed = True
+
+        if (changed or self._hover_offsets) and lw:
+            lw.viewport().update()
+
+    def sizeHint(self, option, index) -> QSize:
+        if index.data(_ROLE_SEP) is not None:
+            return QSize(option.rect.width() if option.rect.isValid() else 220, 26)
+        if self.compact:
+            return QSize(68, 60)
+        return QSize(220, 54)
+
+    def paint(self, painter, option, index):  # noqa: C901
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        sep_text = index.data(_ROLE_SEP)
+        if sep_text is not None:
+            # Group header row
+            painter.setPen(QPen(QColor('#6c7086')))
+            painter.setFont(QFont('Inter', 8, QFont.Bold))
+            painter.drawText(
+                option.rect.adjusted(10, 0, -4, 0),
+                Qt.AlignVCenter | Qt.AlignLeft,
+                str(sep_text).upper(),
+            )
+            painter.restore()
+            return
+
+        svc = index.data(_ROLE_SVC)
+        if not svc:
+            painter.restore()
+            return
+
+        from PySide6.QtWidgets import QStyle
+        r = option.rect
+        w, h, x0, y0 = r.width(), r.height(), r.x(), r.y()
+        is_selected = bool(option.state & QStyle.State_Selected)
+        is_hovered  = bool(option.state & QStyle.State_MouseOver)
+        is_disabled = not getattr(svc, 'enabled', True)
+
+        if is_disabled:
+            painter.setOpacity(0.4)
+
+        # Selection / hover background
+        bar_w = int(self._bar_width) if is_selected else 0
+        if is_selected:
+            painter.setBrush(QBrush(QColor(203, 166, 247, 30)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 4, y0 + 2, w - 8, h - 4, 8, 8)
+            # Animated accent bar
+            if bar_w > 0:
+                painter.setBrush(QBrush(QColor(self.accent)))
+                painter.drawRoundedRect(x0, y0 + 8, bar_w, h - 16, 2, 2)
+        elif is_hovered:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 12)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 4, y0 + 2, w - 8, h - 4, 8, 8)
+
+        # Icon position (with hover float offset)
+        icon_size = 40
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 12
+        hover_off = int(self._hover_offsets.get(index.row(), 0.0))
+        iy = y0 + (h - icon_size) // 2 + hover_off
+
+        # Colored icon background
+        painter.setBrush(QBrush(QColor(svc.color)))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(ix, iy, icon_size, icon_size, 9, 9)
+
+        # Icon content: brand pixmap or 2-letter text
+        pixmap = index.data(_ROLE_PIXMAP)
+        if pixmap and not pixmap.isNull():
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            scaled = pixmap.scaled(26, 26, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            painter.drawPixmap(
+                ix + (icon_size - scaled.width()) // 2,
+                iy + (icon_size - scaled.height()) // 2,
+                scaled,
+            )
         else:
-            self.setFixedHeight(52)
-            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setCheckable(True)
-        self.setCursor(Qt.PointingHandCursor)
-        self._badge = service.unread
-        self._hovered = False
-        self._status: str = 'idle'
-        self._pulse_scale = 1.0
-        self.setAttribute(Qt.WA_Hover)
-        self.setProperty('active', False)
+            painter.setPen(QPen(QColor(255, 255, 255, 230)))
+            painter.setFont(QFont('Segoe UI', 11, QFont.Bold))
+            painter.drawText(ix, iy, icon_size, icon_size, Qt.AlignCenter, svc.icon)
 
-    def set_active(self, active: bool):
-        self.setProperty('active', active)
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.update()
-
-    def set_badge(self, count: int):
-        self._badge = count
-        self.update()
-
-    def set_status(self, status: str):
-        self._status = status
-        self.update()
-
-    def set_pixmap(self, pixmap: QPixmap):
-        self._pixmap = pixmap
-        self.update()
-
-    def pulse_badge(self):
-        """Trigger a brief scale pulse on the badge to attract attention."""
-        self._pulse_scale = 1.4
-        self._pulse_timer = QTimer(self)
-        self._pulse_timer.setInterval(50)
-        step = [0]
-        def _tick():
-            step[0] += 1
-            self._pulse_scale = max(1.0, 1.4 - step[0] * 0.08)
-            self.update()
-            if step[0] >= 5:
-                self._pulse_timer.stop()
-                self._pulse_scale = 1.0
-                self.update()
-        self._pulse_timer.timeout.connect(_tick)
-        self._pulse_timer.start()
-
-    def enterEvent(self, event):
-        self._hovered = True
-        self.update()
-        self.hovered.emit(True)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._hovered = False
-        self.update()
-        self.hovered.emit(False)
-        super().leaveEvent(event)
-
-    def paintEvent(self, _event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-
-        w, h = self.width(), self.height()
-        icon_size = 36
-        ix = (w - icon_size) // 2 if self._compact else 12
-        iy = max((h - icon_size) // 2, 8)
-
-        # Active indicator: left accent bar + subtle background
-        if self.isChecked():
-            p.setBrush(QBrush(QColor('#cba6f7')))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(0, 8, 3, h - 16, 2, 2)
-            p.setBrush(QBrush(QColor(203, 166, 247, 30)))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(4, 2, w - 8, h - 4, 8, 8)
-        elif self._hovered:
-            p.setBrush(QBrush(QColor(255, 255, 255, 12)))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(4, 2, w - 8, h - 4, 8, 8)
-
-        # Icon background
-        p.setBrush(QBrush(QColor(self.service.color)))
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(ix, iy, icon_size, icon_size, 9, 9)
-
-        # Icon: pixmap or text
-        if self._pixmap and not self._pixmap.isNull():
-            p.setRenderHint(QPainter.SmoothPixmapTransform)
-            scaled = self._pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            px_x = ix + (icon_size - scaled.width()) // 2
-            px_y = iy + (icon_size - scaled.height()) // 2
-            p.drawPixmap(px_x, px_y, scaled)
-        else:
-            p.setPen(QPen(QColor(255, 255, 255, 230)))
-            font = QFont('Segoe UI', 11, QFont.Bold)
-            p.setFont(font)
-            p.drawText(ix, iy, icon_size, icon_size, Qt.AlignCenter, self.service.icon)
-
-        # Service name label in normal (non-compact) mode
-        if not self._compact:
+        # Service name — expanded mode only
+        if not self.compact:
             text_x = ix + icon_size + 10
-            avail_w = w - text_x - 12
-            p.setPen(QPen(QColor('#cdd6f4')))
+            avail_w = x0 + w - text_x - 12
+            painter.setPen(QPen(QColor('#cdd6f4')))
             font = QFont('Inter', 10, QFont.Medium)
             font.setLetterSpacing(QFont.AbsoluteSpacing, 0.2)
-            p.setFont(font)
-            fm = p.fontMetrics()
-            elided = fm.elidedText(self.service.name, Qt.ElideRight, avail_w)
-            p.drawText(text_x, 0, avail_w, h, Qt.AlignVCenter | Qt.AlignLeft, elided)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            elided = fm.elidedText(svc.name, Qt.ElideRight, avail_w)
+            painter.drawText(text_x, y0, avail_w, h, Qt.AlignVCenter | Qt.AlignLeft, elided)
 
-        # Badge
-        if self._badge > 0:
-            badge_text = str(self._badge) if self._badge <= 99 else '99+'
+        # Unread badge
+        badge = index.data(_ROLE_BADGE) or 0
+        if badge > 0:
+            badge_text = str(badge) if badge <= 99 else '99+'
             badge_w = max(18, len(badge_text) * 7 + 6)
             badge_h = 16
-            if self._compact:
-                bx = ix + icon_size - badge_w // 2
-                by = iy - 6
-            else:
-                bx = ix + icon_size - badge_w + 6
-                by = iy - 4
-            pulse = getattr(self, '_pulse_scale', 1.0)
-            if pulse != 1.0:
-                cx = bx + badge_w / 2
-                cy = by + badge_h / 2
-                p.save()
-                p.translate(cx, cy)
-                p.scale(pulse, pulse)
-                p.translate(-cx, -cy)
-            p.setBrush(QBrush(QColor('#f38ba8')))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(bx, by, badge_w, badge_h, 8, 8)
-            p.setPen(QPen(QColor('#1e1e2e')))
-            p.setFont(QFont('Segoe UI', 8, QFont.Bold))
-            p.drawText(bx, by, badge_w, badge_h, Qt.AlignCenter, badge_text)
-            if pulse != 1.0:
-                p.restore()
+            bx = ix + icon_size - badge_w // 2
+            by = iy - 6
+            painter.setBrush(QBrush(QColor('#f38ba8')))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bx, by, badge_w, badge_h, 8, 8)
+            painter.setPen(QPen(QColor('#1e1e2e')))
+            painter.setFont(QFont('Segoe UI', 8, QFont.Bold))
+            painter.drawText(bx, by, badge_w, badge_h, Qt.AlignCenter, badge_text)
 
-        # Status dot
-        _status_colors = {
-            'loading': '#fab387',
-            'ready': '#a6e3a1',
-            'error': '#f38ba8',
-            'online': '#a6e3a1',
-            'slow': '#f9e2af',
-            'offline': '#f38ba8',
-        }
-        dot_color = _status_colors.get(self._status)
+        # Status dot (bottom-right of icon)
+        dot_color = _STATUS_COLORS.get(index.data(_ROLE_STATUS) or '')
         if dot_color:
             dot_x = ix + icon_size - 8
             dot_y = iy + icon_size - 8
-            p.setBrush(QBrush(QColor('#ffffff')))
-            p.setPen(Qt.NoPen)
-            p.drawEllipse(dot_x - 1, dot_y - 1, 10, 10)
-            p.setBrush(QBrush(QColor(dot_color)))
-            p.drawEllipse(dot_x, dot_y, 8, 8)
+            painter.setBrush(QBrush(QColor('#ffffff')))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(dot_x - 1, dot_y - 1, 10, 10)
+            painter.setBrush(QBrush(QColor(dot_color)))
+            painter.drawEllipse(dot_x, dot_y, 8, 8)
 
-        # Incognito badge (🕵 in top-left corner of icon)
-        if getattr(self.service, 'incognito', False):
-            p.setPen(QPen(QColor('#cdd6f4')))
-            p.setFont(QFont('Segoe UI Emoji', 9))
-            p.drawText(ix - 2, iy - 2, 14, 14, Qt.AlignCenter, '🕵')
+        # Incognito badge (top-left corner)
+        if getattr(svc, 'incognito', False):
+            painter.setPen(QPen(QColor('#cdd6f4')))
+            painter.setFont(QFont('Segoe UI Emoji', 9))
+            painter.drawText(ix - 2, iy - 2, 14, 14, Qt.AlignCenter, '🕵')
 
-    def contextMenuEvent(self, event: QContextMenuEvent):
-        # Propagate to window via signal (globalPosition().toPoint() is Qt6 API)
-        self._ctx_pos = event.globalPosition().toPoint()
-        self.customContextMenuRequested.emit(event.pos())
-        event.accept()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_start = event.position().toPoint()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if not (event.buttons() & Qt.LeftButton):
-            return
-        if not hasattr(self, '_drag_start'):
-            return
-        if (event.position().toPoint() - self._drag_start).manhattanLength() < 10:
-            return
-        from PySide6.QtGui import QDrag
-        from PySide6.QtCore import QMimeData, QByteArray
-        drag = QDrag(self)
-        mime = QMimeData()
-        mime.setData('application/x-orbit-service', QByteArray(self.service.id.encode()))
-        drag.setMimeData(mime)
-        pixmap = self.grab()
-        drag.setPixmap(pixmap)
-        drag.setHotSpot(self._drag_start)
-        drag.exec(Qt.MoveAction)
+        painter.restore()
 
 
 # ── Small inline icon label (header) ──────────────────────────────────────────
@@ -413,6 +455,136 @@ class _StatusBadge(QWidget):  # pragma: no cover
         self._label.setStyleSheet(f'font-size: 11px; color: {color}; background: transparent;')
         self.setVisible(status != 'idle')
 
+
+
+# ── In-app Toast Notification ─────────────────────────────────────────────────
+
+class _ToastNotification(QWidget):  # pragma: no cover
+    """Slide-in toast notification from top-right corner.
+
+    Displays service name, icon and unread count.
+    Auto-dismisses after ``timeout_ms`` milliseconds.
+    Clicking it emits ``clicked(service_id)``.
+    """
+
+    clicked = Signal(str)  # service_id
+
+    _STACK: 'list[_ToastNotification]' = []  # active toasts (class-level)
+
+    def __init__(self, service, parent=None, timeout_ms: int = 4000):
+        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setFixedSize(300, 64)
+        self._svc = service
+        self._timeout = timeout_ms
+
+        # Layout
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(10)
+
+        # Colored icon
+        icon_w = QLabel()
+        icon_w.setFixedSize(36, 36)
+        icon_w.setAlignment(Qt.AlignCenter)
+        icon_w.setStyleSheet(
+            f'background: {service.color}; border-radius: 8px; '
+            f'font-size:14px; font-weight:bold; color:#fff;'
+        )
+        icon_w.setText(service.icon or service.name[:2].upper())
+        lay.addWidget(icon_w)
+
+        # Text
+        txt = QVBoxLayout()
+        txt.setSpacing(2)
+        name_lbl = QLabel(service.name)
+        name_lbl.setStyleSheet('font-weight:600; font-size:12px; color:#cdd6f4; background:transparent;')
+        unread = getattr(service, 'unread', 0)
+        msg_lbl = QLabel(f'{unread} mensagem(ns) não lida(s)')
+        msg_lbl.setStyleSheet('font-size:11px; color:#a6adc8; background:transparent;')
+        txt.addWidget(name_lbl)
+        txt.addWidget(msg_lbl)
+        lay.addLayout(txt, 1)
+
+        self.setStyleSheet(
+            'background: #1e1e2e; border-radius: 12px; '
+            'border: 1px solid #313244;'
+        )
+        self.setCursor(Qt.PointingHandCursor)
+
+        # Slide-in animation (moves from right+hidden → visible)
+        self._anim = QPropertyAnimation(self, b'pos', self)
+        self._anim.setDuration(280)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        # Auto-dismiss timer
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._dismiss)
+        self._timer.start(timeout_ms)
+
+        _ToastNotification._STACK.append(self)
+
+    def _get_target_pos(self) -> QPoint:
+        parent = self.parent()
+        stack_offset = len(_ToastNotification._STACK) - 1
+        if parent:
+            pr = parent.rect()
+            local = QPoint(pr.width() - self.width() - 16,
+                           48 + stack_offset * (self.height() + 8))
+            # Qt.Tool windows are top-level: move() uses screen coords
+            return parent.mapToGlobal(local)
+        from PySide6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen().availableGeometry()
+        return QPoint(screen.right() - self.width() - 16,
+                      screen.top() + 48 + stack_offset * (self.height() + 8))
+
+    def show_animated(self):
+        target = self._get_target_pos()
+        start = QPoint(target.x() + self.width() + 20, target.y())
+        self.move(start)
+        self.show()
+        self._anim.setStartValue(start)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def _dismiss(self):
+        self._timer.stop()
+        # Disconnect any previous finished connections to avoid double cleanup
+        try:
+            self._anim.finished.disconnect()
+        except RuntimeError:
+            pass
+        self._anim.setStartValue(self.pos())
+        end = QPoint(self.pos().x() + self.width() + 20, self.pos().y())
+        self._anim.setEndValue(end)
+        self._anim.setDuration(200)
+        self._anim.setEasingCurve(QEasingCurve.InCubic)
+        self._anim.finished.connect(self._cleanup)
+        self._anim.start()
+
+    def _cleanup(self):
+        if self in _ToastNotification._STACK:
+            _ToastNotification._STACK.remove(self)
+        self.close()
+        self.deleteLater()
+
+    def mousePressEvent(self, event):
+        self._timer.stop()
+        self.clicked.emit(self._svc.id)
+        self._dismiss()
+
+    def paintEvent(self, event):  # noqa: N802
+        """Explicit paint so the dark background renders on WA_TranslucentBackground."""
+        from PySide6.QtGui import QPainter, QColor, QPen
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor('#313244'), 1))
+        p.setBrush(QColor('#1e1e2e'))
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 12, 12)
+        p.end()
+
 
 # ── Glass sidebar ─────────────────────────────────────────────────────────────
 
@@ -435,30 +607,43 @@ class _GlassSidebar(QWidget):  # pragma: no cover
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
 
-        # Base gradient — top-to-bottom dark
+        # Base gradient — dark at top, accent-tinted at bottom
+        ac = QColor(self._accent)
+        base_top = QColor(26, 26, 36, 252)
+        base_bot = QColor(
+            min(255, 18 + int(ac.red() * 0.12)),
+            min(255, 18 + int(ac.green() * 0.08)),
+            min(255, 26 + int(ac.blue() * 0.18)),
+            255,
+        )
         grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0, QColor(26, 26, 36, 252))
-        grad.setColorAt(1, QColor(18, 18, 26, 255))
+        grad.setColorAt(0.0, base_top)
+        grad.setColorAt(1.0, base_bot)
         p.fillRect(0, 0, w, h, grad)
 
+        # Accent glow at bottom (radial fade from center-bottom)
+        glow_ac = QColor(self._accent)
+        glow_ac.setAlpha(30)
+        glow_ac2 = QColor(self._accent)
+        glow_ac2.setAlpha(0)
+        bot_grad = QLinearGradient(0, h - 120, 0, h)
+        bot_grad.setColorAt(0.0, glow_ac2)
+        bot_grad.setColorAt(1.0, glow_ac)
+        p.fillRect(0, h - 120, w, 120, bot_grad)
+
         # Accent top glow strip (2px, fades left→right)
-        ac = QColor(self._accent)
-        ac.setAlpha(60)
-        ac2 = QColor(self._accent)
-        ac2.setAlpha(0)
+        ac_strip = QColor(self._accent)
+        ac_strip.setAlpha(80)
+        ac_strip2 = QColor(self._accent)
+        ac_strip2.setAlpha(0)
         top_grad = QLinearGradient(0, 0, w, 0)
-        top_grad.setColorAt(0, ac)
-        top_grad.setColorAt(1, ac2)
+        top_grad.setColorAt(0, ac_strip)
+        top_grad.setColorAt(1, ac_strip2)
         p.fillRect(0, 0, w, 2, top_grad)
 
         # Right-edge border
         p.setPen(QColor(50, 50, 65, 200))
         p.drawLine(w - 1, 0, w - 1, h)
-
-        # Subtle horizontal scan lines every 40px
-        p.setPen(QColor(255, 255, 255, 8))
-        for y in range(0, h, 40):
-            p.drawLine(0, y, w, y)
 
         super().paintEvent(event)
 
@@ -520,6 +705,7 @@ class OrbitWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         load_history()
+        _tick()  # keep splash alive
         self._init_encryption()
         self._workspaces: List[Workspace] = load_workspaces()
         self._active_workspace: Workspace = self._workspaces[0]
@@ -529,8 +715,8 @@ class OrbitWindow(QMainWindow):
 
         # (service_id, account_id) → ServiceView
         self._views: Dict[Tuple[str, str], ServiceView] = {}
-        # service_id → ServiceButton
-        self._svc_btns: Dict[str, ServiceButton] = {}
+        # service_id → QListWidgetItem
+        self._svc_items: Dict[str, QListWidgetItem] = {}
         # group header widgets tracked for cleanup
         self._group_header_widgets: list = []
 
@@ -559,18 +745,32 @@ class OrbitWindow(QMainWindow):
         # Load focus profile from settings
         settings = load_settings()
         _load_focus_profile(settings)
+        _tick()
 
         self._setup_window()
-        self._sidebar_compact: bool = load_settings().get('sidebar_compact', False)
-        self._hover_anims: list = []
+        _tick()
+        self._sidebar_compact: bool = load_settings().get('sidebar_compact', True)
+        self._hover_anims: list = []  # kept for compat (unused since sidebar refactor)
         self._build_ui()
+        _tick()
         self._setup_tray()
         self._setup_shortcuts()
+        _tick()
         self._rich_tooltip = _RichTooltip()
         self._hibernate_timers: Dict[str, 'QTimer'] = {}
         self._hibernated: set = set()  # set of (service_id, account_id) keys
         self._setup_hibernate_timers()
         self._apply_theme(self._theme)
+
+        # Re-apply sidebar width after show() so QSplitter honours the value
+        # (setSizes() called before show() is often ignored by Qt's layout engine)
+        _s0 = load_settings()
+        _cw0 = _s0.get('sidebar_compact_width', 68)
+        _ew0 = _s0.get('sidebar_expanded_width', 220)
+        _iw0 = _cw0 if self._sidebar_compact else _s0.get('sidebar_width', _ew0)
+        QTimer.singleShot(0, lambda: self._splitter.setSizes(
+            [_iw0, max(1, self._splitter.width() - _iw0), 0]
+        ))
 
         # Restore AI sidebar state from settings
         if load_settings().get('ai_sidebar_open', False):
@@ -595,6 +795,10 @@ class OrbitWindow(QMainWindow):
 
         set_ad_block(load_settings().get('ad_block', True))
         self._check_updates(silent=True)
+
+        # Pre-warm remaining services if preload_on_start is enabled
+        if load_settings().get('preload_on_start', False) and len(self._services) > 1:
+            self._schedule_service_preload(self._services[1:])
 
         # ── Lock screen ──────────────────────────────────────────────────────
         settings = load_settings()
@@ -692,6 +896,39 @@ class OrbitWindow(QMainWindow):
                 if event.key() == Qt.Key_Escape:
                     self._hide_service_search()
                     return True
+        # Hide rich tooltip when mouse leaves the service list viewport
+        if event.type() == QEvent.Leave and hasattr(self, '_svc_list'):
+            if obj is self._svc_list.viewport() and hasattr(self, '_rich_tooltip'):
+                self._rich_tooltip.hide()
+        # ── Drag-to-reorder service list ──────────────────────────
+        if hasattr(self, '_svc_list') and obj is self._svc_list.viewport():
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                item = self._svc_list.itemAt(event.position().toPoint())
+                if item:
+                    self._drag_src_row = self._svc_list.row(item)
+                    self._drag_active = False
+            elif event.type() == QEvent.MouseMove and self._drag_src_row >= 0:
+                if not self._drag_active:
+                    self._drag_active = True
+                    self._svc_list.setCursor(Qt.ClosedHandCursor)
+                pos = event.position().toPoint()
+                target = self._svc_list.itemAt(pos)
+                if target:
+                    target_row = self._svc_list.row(target)
+                    if target_row != self._drag_src_row:
+                        # Move in data model
+                        svc = self._services.pop(self._drag_src_row)
+                        self._services.insert(target_row, svc)
+                        # Rebuild and track new position
+                        self._rebuild_sidebar()
+                        self._svc_list.setCurrentRow(target_row)
+                        self._drag_src_row = target_row
+            elif event.type() == QEvent.MouseButtonRelease and self._drag_src_row >= 0:
+                if self._drag_active:
+                    self._save()
+                    self._svc_list.setCursor(Qt.ArrowCursor)
+                self._drag_src_row = -1
+                self._drag_active = False
         return super().eventFilter(obj, event)
 
     # ── window setup ─────────────────────────────────────────────────────────────
@@ -761,6 +998,10 @@ class OrbitWindow(QMainWindow):
         notif_sc.activated.connect(self._toggle_notif_center)
         self._sc_objects['notif_center'] = notif_sc
 
+        settings_sc = QShortcut(QKeySequence('Ctrl+,'), self)
+        settings_sc.activated.connect(self._show_settings)
+        self._sc_objects['settings'] = settings_sc
+
     def _kbd_select_service(self, idx: int):  # pragma: no cover
         if idx < len(self._services):
             self._select_service(self._services[idx])
@@ -812,8 +1053,7 @@ class OrbitWindow(QMainWindow):
         root.setSpacing(0)
 
         # ── SIDEBAR ────────────────────────────────────────────────────────────
-        ws_accent = getattr(self._active_workspace, 'accent', '')
-        _sidebar_accent = ws_accent if ws_accent else ACCENTS.get(self._accent, ACCENTS['Iris'])
+        _sidebar_accent = ACCENTS.get(self._accent, ACCENTS['Iris'])
         self._sidebar = _GlassSidebar(_sidebar_accent)
         self._glass_sidebar = self._sidebar
         self._sidebar.setMinimumWidth(64)
@@ -822,14 +1062,19 @@ class OrbitWindow(QMainWindow):
         sb_layout.setContentsMargins(0, 12, 0, 8)
         sb_layout.setSpacing(0)
 
-        logo = QLabel('🐙')
-        logo.setAlignment(Qt.AlignCenter)
-        logo.setFixedHeight(36)
-        logo.setStyleSheet('font-size:22px;')
+        _lottie_path = LottieLabel.lottie_path()
+        if os.path.exists(_lottie_path):
+            logo = LottieLabel(_lottie_path, size=36, fps=30, skip_frames=2)
+        else:
+            logo = QLabel()
+            logo.setAlignment(Qt.AlignCenter)
+            logo.setFixedHeight(40)
+            logo.setPixmap(_orbit_logo_pixmap(34))
+            logo.setStyleSheet('background: transparent;')
         sb_layout.addWidget(logo)
         sb_layout.addSpacing(8)
 
-        # Workspace switcher
+        # Workspace switcher — hidden when workspaces_enabled=False
         self._ws_btn = QPushButton()
         self._ws_btn.setObjectName('wsBtn')
         self._ws_btn.setFixedHeight(24)
@@ -840,14 +1085,17 @@ class OrbitWindow(QMainWindow):
         self._ws_btn.customContextMenuRequested.connect(
             lambda pos: self._show_workspace_ctx_menu(self._ws_btn.mapToGlobal(pos))
         )
+        _ws_enabled = load_settings().get('workspaces_enabled', True)
+        self._ws_btn.setVisible(_ws_enabled)
         sb_layout.addWidget(self._ws_btn)
         sb_layout.addSpacing(4)
 
         # Separator between workspace button and service list
-        _sep_top = QFrame()
-        _sep_top.setFixedHeight(1)
-        _sep_top.setStyleSheet('background-color: #2e2e3d; border: none; margin: 2px 8px;')
-        sb_layout.addWidget(_sep_top)
+        self._sep_top = QFrame()
+        self._sep_top.setFixedHeight(1)
+        self._sep_top.setStyleSheet('background-color: #2e2e3d; border: none; margin: 2px 8px;')
+        self._sep_top.setVisible(_ws_enabled)
+        sb_layout.addWidget(self._sep_top)
         sb_layout.addSpacing(4)
 
         # ── Quick service search bar (hidden by default, Alt+S to show) ──────
@@ -864,64 +1112,80 @@ class OrbitWindow(QMainWindow):
         self._search_bar.installEventFilter(self)
         sb_layout.addWidget(self._search_bar)
 
-        scroll = QScrollArea()
-        scroll.setObjectName('svcScroll')
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QFrame.NoFrame)
+        # ── Service list (QListWidget + ServiceDelegate) ──────────────────────
+        self._svc_list = QListWidget()
+        self._svc_list.setObjectName('svcList')
+        self._svc_list.setFrameShape(QFrame.NoFrame)
+        self._svc_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._svc_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._svc_list.setSpacing(1)
+        self._svc_list.setSelectionMode(QListWidget.SingleSelection)
+        self._svc_list.setMouseTracking(True)
+        self._svc_list.viewport().setMouseTracking(True)
 
-        self._svc_container = QWidget()
-        self._svc_container.setObjectName('svcContainer')
-        self._svc_container.setAcceptDrops(True)
-        self._svc_container.dragEnterEvent = self._svc_drag_enter
-        self._svc_container.dropEvent = self._svc_drop
-        self._svc_layout = QVBoxLayout(self._svc_container)
-        self._svc_layout.setContentsMargins(6, 4, 6, 4)
-        self._svc_layout.setSpacing(1)
-        self._svc_layout.setAlignment(Qt.AlignTop)
+        # Delegate must be created AFTER svc_list and passed as parent so that
+        # self.parent() in _tick_hover correctly returns the QListWidget.
+        self._svc_delegate = ServiceDelegate(self._svc_list)
+        self._svc_delegate.compact = self._sidebar_compact
+        self._svc_list.setItemDelegate(self._svc_delegate)
+        self._svc_list.setStyleSheet(
+            'QListWidget { background: transparent; border: none; outline: none; }'
+            'QListWidget::item { border: none; background: transparent; }'
+            'QListWidget::item:selected { background: transparent; }'
+        )
+        # Drag-to-reorder (custom implementation with visual indicator)
+        self._svc_list.setDragDropMode(QListWidget.NoDragDrop)
+        self._drag_src_row = -1
+        self._drag_active = False
+        self._svc_list.viewport().installEventFilter(self)
 
-        scroll.setWidget(self._svc_container)
-        sb_layout.addWidget(scroll, 1)
+        # Signals
+        self._svc_list.itemClicked.connect(self._on_svc_item_clicked)
+        self._svc_list.currentItemChanged.connect(
+            lambda cur, prev: self._svc_delegate.animate_selection() if cur else None
+        )
+        self._svc_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._svc_list.customContextMenuRequested.connect(self._on_svc_ctx_menu)
+        self._svc_list.itemEntered.connect(self._on_svc_item_entered)
+        self._svc_list.viewport().installEventFilter(self)
 
-        # Separator between service list and bottom buttons
+        sb_layout.addWidget(self._svc_list, 1)
+
+        # Separator between service list and bottom bar
         _sep_bot = QFrame()
         _sep_bot.setFixedHeight(1)
         _sep_bot.setStyleSheet('background-color: #2e2e3d; border: none; margin: 2px 8px;')
         sb_layout.addWidget(_sep_bot)
 
-        # Add button
-        add_btn_wrap = QWidget()
-        add_layout = QHBoxLayout(add_btn_wrap)
-        add_layout.setContentsMargins(8, 0, 8, 0)
-        add_layout.addStretch()
-        add_btn = QPushButton()
-        add_btn.setIcon(svg_icon('plus-circle', 20, '#6c7086'))
-        add_btn.setIconSize(QSize(20, 20))
-        add_btn.setObjectName('addBtn')
-        add_btn.setFixedSize(52, 44)
-        add_btn.setToolTip('Adicionar serviço')
-        add_btn.clicked.connect(self._add_service)
-        add_layout.addWidget(add_btn)
-        add_layout.addStretch()
-        sb_layout.addWidget(add_btn_wrap)
+        # ── Bottom action bar: [⚙ Settings] [+ Add] [‹ Collapse] ─────────────
+        self._bottom_bar = QWidget()
+        bottom_layout = QHBoxLayout(self._bottom_bar)
+        bottom_layout.setContentsMargins(4, 4, 4, 4)
+        bottom_layout.setSpacing(0)
 
-        # Compact toggle button
-        compact_wrap = QWidget()
-        compact_layout = QHBoxLayout(compact_wrap)
-        compact_layout.setContentsMargins(8, 0, 8, 4)
-        compact_layout.addStretch()
-        self._compact_btn = QPushButton()
-        self._compact_btn.setIcon(svg_icon('chevron-double-left' if not self._sidebar_compact else 'chevron-double-right', 16, '#6c7086'))
-        self._compact_btn.setIconSize(QSize(16, 16))
-        self._compact_btn.setObjectName('addBtn')
-        self._compact_btn.setFixedSize(52, 28)
-        self._compact_btn.setCursor(Qt.PointingHandCursor)
-        self._compact_btn.setToolTip('Alternar sidebar compacta')
-        self._compact_btn.clicked.connect(self._toggle_compact)
-        compact_layout.addWidget(self._compact_btn)
-        compact_layout.addStretch()
-        sb_layout.addWidget(compact_wrap)
+        def _mk_bar_btn(icon_name: str, tooltip: str, slot) -> QPushButton:
+            btn = QPushButton()
+            btn.setIcon(svg_icon(icon_name, 18, '#6c7086'))
+            btn.setIconSize(QSize(18, 18))
+            btn.setObjectName('addBtn')
+            btn.setFixedHeight(32)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(slot)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            return btn
+
+        settings_btn = _mk_bar_btn('cog-6-tooth', 'Configurações  (Ctrl+,)', self._show_settings)
+        add_btn = _mk_bar_btn('plus-circle', 'Adicionar serviço', self._add_service)
+        self._compact_btn = _mk_bar_btn(
+            'chevron-double-right' if self._sidebar_compact else 'chevron-double-left',
+            'Recolher sidebar',
+            self._toggle_compact,
+        )
+        bottom_layout.addWidget(settings_btn)
+        bottom_layout.addWidget(add_btn)
+        bottom_layout.addWidget(self._compact_btn)
+        sb_layout.addWidget(self._bottom_bar)
 
         # ── CONTENT AREA ───────────────────────────────────────────────────────
         content = QWidget()
@@ -968,8 +1232,12 @@ class OrbitWindow(QMainWindow):
         self._splitter.setCollapsible(0, False)
         self._splitter.setCollapsible(1, False)
         self._splitter.setCollapsible(2, True)
-        saved_w = load_settings().get('sidebar_width', 220 if not self._sidebar_compact else 68)
-        self._splitter.setSizes([saved_w, 1220, 0])
+        _s = load_settings()
+        _compact_w  = _s.get('sidebar_compact_width', 68)
+        _expanded_w = _s.get('sidebar_expanded_width', 220)
+        # Always use compact width when compact mode is active (ignore possibly-stale saved_w)
+        _init_w = _compact_w if self._sidebar_compact else _s.get('sidebar_width', _expanded_w)
+        self._splitter.setSizes([_init_w, 1220, 0])
         self._splitter.splitterMoved.connect(self._on_splitter_moved)
         root.addWidget(self._splitter, 1)
 
@@ -1005,9 +1273,15 @@ class OrbitWindow(QMainWindow):
         layout.setAlignment(Qt.AlignCenter)
         layout.setSpacing(14)
 
-        logo = QLabel('🐙')
-        logo.setAlignment(Qt.AlignCenter)
-        logo.setStyleSheet('font-size:64px;')
+        _lottie_path = LottieLabel.lottie_path()
+        if os.path.exists(_lottie_path):
+            logo = LottieLabel(_lottie_path, size=96, fps=30, skip_frames=2)
+        else:
+            logo = QLabel()
+            logo.setAlignment(Qt.AlignCenter)
+            _welcome_px = _orbit_logo_pixmap(96)
+            logo.setPixmap(_welcome_px)
+            logo.setStyleSheet('background: transparent;')
         layout.addWidget(logo)
 
         title = QLabel('Orbit')
@@ -1153,11 +1427,12 @@ class OrbitWindow(QMainWindow):
         self._filter_sidebar_by_search('')
 
     def _filter_sidebar_by_search(self, text: str):  # pragma: no cover
-        """Show/hide service buttons based on search text."""
+        """Show/hide service items based on search text."""
         query = text.strip().lower()
-        for svc_id, btn in self._svc_btns.items():
-            name = btn.service.name.lower()
-            btn.setVisible(not query or query in name)
+        for svc_id, item in self._svc_items.items():
+            svc = item.data(_ROLE_SVC)
+            name = svc.name.lower() if svc else ''
+            item.setHidden(bool(query) and query not in name)
 
     # ── tag filter ────────────────────────────────────────────────────────────
 
@@ -1287,119 +1562,49 @@ class OrbitWindow(QMainWindow):
         dlg.exec()
 
     def _rebuild_sidebar(self):  # pragma: no cover
-        # Clear ALL widgets from the service layout (buttons + group headers + wrappers)
-        while self._svc_layout.count():
-            item = self._svc_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-        self._svc_btns.clear()
+        # Clear all items
+        self._svc_list.clear()
+        self._svc_items.clear()
         self._group_header_widgets = []
-        self._hover_anims = []
 
         from .catalog import get_entry
 
-        groups = getattr(self._active_workspace, 'groups', [])
-        grouped_ids: set = set()
-        for g in groups:
-            grouped_ids.update(g.service_ids)
+        # Clear legacy groups — groups are no longer used
+        if self._active_workspace and getattr(self._active_workspace, 'groups', None):
+            self._active_workspace.groups = []
 
-        def _add_service_btn(svc: Service, indent: int = 0):
-            # Tag filter: hide if not matching active tag filter
+        def _add_svc_item(svc: Service, indent: int = 0):
             if self._active_tag_filter and self._active_tag_filter not in getattr(svc, 'tags', []):
                 return
 
-            btn = ServiceButton(svc, compact=self._sidebar_compact)
-            if self._sidebar_compact:
-                btn.setToolTip(svc.name)
+            item = QListWidgetItem()
+            item.setData(_ROLE_SVC, svc)
+            item.setData(_ROLE_BADGE, getattr(svc, 'unread', 0))
+            item.setData(_ROLE_STATUS, '')
+            item.setData(_ROLE_PIXMAP, None)
+
+            # Load cached icon (white fill for visibility on colored box)
             from .brand_icons import brand_icon, has_brand_icon
             entry = get_entry(svc.service_type)
             if has_brand_icon(svc.service_type):
-                px = brand_icon(svc.service_type, 24)
+                px = brand_icon(svc.service_type, 26, '#FFFFFF')
                 if not px.isNull():
-                    btn.set_pixmap(px)
+                    item.setData(_ROLE_PIXMAP, px)
             elif entry and entry.favicon_url:
+                from .cache import get_cached_pixmap
                 cached = get_cached_pixmap(entry.favicon_url)
                 if cached:
-                    btn.set_pixmap(cached)
+                    item.setData(_ROLE_PIXMAP, cached)
 
-            # Disabled service: grey out with opacity
-            if not getattr(svc, 'enabled', True):
-                effect = QGraphicsOpacityEffect(btn)
-                effect.setOpacity(0.4)
-                btn.setGraphicsEffect(effect)
-                btn.setToolTip(f'{svc.name} (desabilitado)')
-                # Disabled services: clicking re-enables instead of selecting
-                btn.clicked.connect(lambda _, s=svc: None)
-            else:
-                btn.clicked.connect(lambda _, s=svc: self._select_service(s))
+            item.setToolTip('')  # Badge already shows count — no tooltip needed
+            item.setFlags(item.flags() | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
 
-            btn.setContextMenuPolicy(Qt.CustomContextMenu)
-            btn.customContextMenuRequested.connect(
-                lambda pos, b=btn, s=svc: self._show_ctx_menu(s, b.mapToGlobal(pos))
-            )
-            btn.hovered.connect(
-                lambda is_hovered, s=svc, b=btn:
-                    self._rich_tooltip.show_for(s, b.mapToGlobal(b.rect()).translated(b.width(), 0))
-                    if is_hovered else self._rich_tooltip.hide()
-            )
+            self._svc_list.addItem(item)
+            self._svc_items[svc.id] = item
 
-            # Wrap and add to layout
-            if indent > 0 and not self._sidebar_compact:
-                wrap = QWidget()
-                wrap_lay = QHBoxLayout(wrap)
-                wrap_lay.setContentsMargins(indent, 0, 0, 0)
-                wrap_lay.setSpacing(0)
-                wrap_lay.addWidget(btn)
-                wrap.setFixedHeight(52)
-                self._svc_layout.addWidget(wrap)
-            elif self._sidebar_compact:
-                self._svc_layout.addWidget(btn, 0, Qt.AlignHCenter)
-            else:
-                self._svc_layout.addWidget(btn)
-            self._svc_btns[svc.id] = btn
-            self._hover_anims.append(apply_hover_effect(btn, hover=1.0, normal=0.82))
-
-            # Tag chips — only in expanded mode
-            tags = getattr(svc, 'tags', [])
-            if tags and not self._sidebar_compact:
-                chips_widget = QWidget()
-                chips_layout = QHBoxLayout(chips_widget)
-                chips_layout.setContentsMargins(12, 0, 8, 2)
-                chips_layout.setSpacing(4)
-                chips_layout.addStretch()
-                for tag in tags:
-                    chip = QPushButton(tag)
-                    chip.setObjectName('tagChip')
-                    chip.setCursor(Qt.PointingHandCursor)
-                    chip.setFixedHeight(16)
-                    is_active_tag = (self._active_tag_filter == tag)
-                    bg = '#cba6f7' if is_active_tag else '#313244'
-                    fg = '#1e1e2e' if is_active_tag else '#a6adc8'
-                    chip.setStyleSheet(
-                        f'QPushButton {{ background:{bg}; color:{fg}; border-radius:8px; '
-                        f'font-size:9px; padding:0 6px; border:none; }}'
-                        f'QPushButton:hover {{ background:#45475a; }}'
-                    )
-                    chip.clicked.connect(lambda _, t=tag: self._toggle_tag_filter(t))
-                    chips_layout.addWidget(chip)
-                self._svc_layout.addWidget(chips_widget)
-
-        # Render groups
-        for group in groups:
-            header = self._make_group_header(group)
-            self._svc_layout.addWidget(header)
-            self._group_header_widgets.append(header)
-            if not group.collapsed:
-                for svc_id in group.service_ids:
-                    svc = next((s for s in self._services if s.id == svc_id), None)
-                    if svc:
-                        _add_service_btn(svc, indent=8)
-
-        # Ungrouped services
+        # Render all services (groups removed — use workspaces instead)
         for svc in self._services:
-            if svc.id not in grouped_ids:
-                _add_service_btn(svc, indent=0)
+            _add_svc_item(svc, indent=0)
 
         if hasattr(self, '_icon_fetcher'):
             self._fetch_service_icons()
@@ -1487,7 +1692,9 @@ class OrbitWindow(QMainWindow):
         settings['sidebar_compact'] = self._sidebar_compact
         save_settings(settings)
 
-        target_w = 68 if self._sidebar_compact else 220
+        compact_w  = settings.get('sidebar_compact_width', 68)
+        expanded_w = settings.get('sidebar_expanded_width', 220)
+        target_w = compact_w if self._sidebar_compact else expanded_w
         start_w = self._splitter.sizes()[0]
 
         # Use QPropertyAnimation on sidebar min/max width for smooth animation
@@ -1512,6 +1719,10 @@ class OrbitWindow(QMainWindow):
             self._sidebar.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
             total = sum(self._splitter.sizes())
             self._splitter.setSizes([target_w, total - target_w])
+            # Notify delegate and refresh list layout
+            self._svc_delegate.compact = self._sidebar_compact
+            self._svc_list.scheduleDelayedItemsLayout()
+            self._svc_list.viewport().update()
             self._rebuild_sidebar()
             self._update_compact_btn()
 
@@ -1549,19 +1760,26 @@ class OrbitWindow(QMainWindow):
         for svc in self._services:
             entry = get_entry(svc.service_type)
             if entry and entry.favicon_url == url:
-                btn = self._svc_btns.get(svc.id)
-                if btn:
-                    btn.set_pixmap(pixmap)
+                item = self._svc_items.get(svc.id)
+                if item:
+                    item.setData(_ROLE_PIXMAP, pixmap)
+                    self._svc_list.viewport().update()
 
     # ── workspace ────────────────────────────────────────────────────────────
+
+    def set_workspaces_enabled(self, enabled: bool) -> None:  # pragma: no cover
+        """Show or hide the workspace switcher in the sidebar."""
+        s = load_settings()
+        s['workspaces_enabled'] = enabled
+        save_settings(s)
+        if hasattr(self, '_ws_btn'):
+            self._ws_btn.setVisible(enabled)
+        if hasattr(self, '_sep_top'):
+            self._sep_top.setVisible(enabled)
 
     def _apply_theme(self, theme: str):  # pragma: no cover
         self._theme = theme
         accent_color = ACCENTS.get(self._accent, ACCENTS['Iris'])
-        # Use workspace-specific accent if set
-        ws_accent = getattr(getattr(self, '_active_workspace', None), 'accent', '')
-        if ws_accent:
-            accent_color = ws_accent
         tokens = get_tokens(theme, accent_color)
         self.setStyleSheet(tokens.qss())
         settings = load_settings()
@@ -1599,6 +1817,12 @@ class OrbitWindow(QMainWindow):
             act.triggered.connect(lambda _, w=ws: self._switch_workspace(w))
         menu.addSeparator()
         menu.addAction('＋ Novo workspace').triggered.connect(self._add_workspace)
+        menu.addSeparator()
+        rename_act = menu.addAction('✏  Renomear workspace atual')
+        rename_act.triggered.connect(self._rename_workspace)
+        delete_act = menu.addAction('🗑  Excluir workspace atual')
+        delete_act.setEnabled(len(self._workspaces) > 1)
+        delete_act.triggered.connect(self._delete_workspace)
         menu.exec(self._ws_btn.mapToGlobal(self._ws_btn.rect().bottomLeft()))
 
     def _show_workspace_ctx_menu(self, global_pos):  # pragma: no cover
@@ -1627,23 +1851,16 @@ class OrbitWindow(QMainWindow):
         self._update_title_badge()
         if self._services:
             self._select_service(self._services[0])
-        # Apply workspace-specific accent (or fall back to global)
+        # Apply global accent (workspace no longer overrides)
         global_accent = ACCENTS.get(self._accent, ACCENTS['Iris'])
-        effective_accent = ws.accent if ws.accent else global_accent
-        tokens = get_tokens(self._theme, effective_accent)
+        tokens = get_tokens(self._theme, global_accent)
         self.setStyleSheet(tokens.qss())
         if hasattr(self, '_glass_sidebar'):
-            self._glass_sidebar.set_accent(effective_accent)
+            self._glass_sidebar.set_accent(global_accent)
             self._glass_sidebar.setStyleSheet(
                 'QWidget#sidebar { background: transparent; border-right: none; }'
             )
         _log_event('workspace_switched', ws.name)
-        # Apply bg_color to content area
-        if hasattr(self, '_content_widget'):
-            if ws.bg_color:
-                self._content_widget.setStyleSheet(f'background: {ws.bg_color};')
-            else:
-                self._content_widget.setStyleSheet('')
 
     def _add_workspace(self):  # pragma: no cover
         from .models import new_id
@@ -1653,7 +1870,7 @@ class OrbitWindow(QMainWindow):
             return
         name = dlg.get_name()
         if name:
-            ws = Workspace(id=new_id('ws'), name=name, accent=dlg.get_accent(), bg_color=dlg.get_bg_color())
+            ws = Workspace(id=new_id('ws'), name=name)
             self._workspaces.append(ws)
             self._switch_workspace(ws)
             self._save()
@@ -1661,8 +1878,6 @@ class OrbitWindow(QMainWindow):
     def _rename_workspace(self):  # pragma: no cover
         dlg = EditWorkspaceDialog(
             name=self._active_workspace.name,
-            accent=self._active_workspace.accent,
-            bg_color=self._active_workspace.bg_color,
             parent=self,
         )
         dlg.setWindowTitle('Editar workspace')
@@ -1671,19 +1886,7 @@ class OrbitWindow(QMainWindow):
         name = dlg.get_name()
         if name:
             self._active_workspace.name = name
-            self._active_workspace.accent = dlg.get_accent()
-            self._active_workspace.bg_color = dlg.get_bg_color()
             self._update_workspace_btn()
-            # Re-apply accent for the active workspace
-            global_accent = ACCENTS.get(self._accent, ACCENTS['Iris'])
-            effective_accent = self._active_workspace.accent if self._active_workspace.accent else global_accent
-            tokens = get_tokens(self._theme, effective_accent)
-            self.setStyleSheet(tokens.qss())
-            if hasattr(self, '_glass_sidebar'):
-                self._glass_sidebar.set_accent(effective_accent)
-                self._glass_sidebar.setStyleSheet(
-                    'QWidget#sidebar { background: transparent; border-right: none; }'
-                )
             self._save()
 
     def _delete_workspace(self):  # pragma: no cover
@@ -1749,9 +1952,12 @@ class OrbitWindow(QMainWindow):
         self._header_layout.addWidget(self._focus_profile_btn)
 
         # Privacy mode button
-        privacy_btn = QPushButton('👁')
+        privacy_icon_name = 'eye-slash' if self._privacy_mode else 'eye'
+        privacy_btn = QPushButton()
+        privacy_btn.setIcon(svg_icon(privacy_icon_name, 18, '#6c7086'))
+        privacy_btn.setIconSize(QSize(18, 18))
         privacy_btn.setObjectName('hBtn')
-        privacy_btn.setFixedSize(28, 28)
+        privacy_btn.setFixedSize(32, 32)
         privacy_btn.setToolTip('Modo Privacidade (Ctrl+Shift+P)')
         privacy_btn.setCursor(Qt.PointingHandCursor)
         privacy_btn.setCheckable(True)
@@ -1760,9 +1966,11 @@ class OrbitWindow(QMainWindow):
         self._header_layout.addWidget(privacy_btn)
 
         # AI sidebar toggle button
-        ai_btn = QPushButton('🤖')
+        ai_btn = QPushButton()
+        ai_btn.setIcon(svg_icon('sparkles', 18, '#6c7086'))
+        ai_btn.setIconSize(QSize(18, 18))
         ai_btn.setObjectName('hBtn')
-        ai_btn.setFixedSize(28, 28)
+        ai_btn.setFixedSize(32, 32)
         ai_btn.setToolTip('Painel IA (Ctrl+Shift+A)')
         ai_btn.setCursor(Qt.PointingHandCursor)
         ai_btn.clicked.connect(self._toggle_ai_sidebar)
@@ -1770,10 +1978,10 @@ class OrbitWindow(QMainWindow):
 
         # Notification history button
         hist_btn = QPushButton()
-        hist_btn.setIcon(svg_icon('bell', 16, '#6c7086'))
-        hist_btn.setIconSize(QSize(16, 16))
+        hist_btn.setIcon(svg_icon('bell', 18, '#6c7086'))
+        hist_btn.setIconSize(QSize(18, 18))
         hist_btn.setObjectName('hBtn')
-        hist_btn.setFixedSize(28, 28)
+        hist_btn.setFixedSize(32, 32)
         hist_btn.setToolTip('Histórico de notificações')
         hist_btn.setCursor(Qt.PointingHandCursor)
         hist_btn.clicked.connect(self._show_notif_history_panel)
@@ -1782,10 +1990,10 @@ class OrbitWindow(QMainWindow):
         # DND button
         dnd_icon = 'bell-slash' if self._is_dnd_active() else 'bell'
         dnd_btn = QPushButton()
-        dnd_btn.setIcon(svg_icon(dnd_icon, 16, '#6c7086'))
-        dnd_btn.setIconSize(QSize(16, 16))
+        dnd_btn.setIcon(svg_icon(dnd_icon, 18, '#6c7086'))
+        dnd_btn.setIconSize(QSize(18, 18))
         dnd_btn.setObjectName('hBtn')
-        dnd_btn.setFixedSize(28, 28)
+        dnd_btn.setFixedSize(32, 32)
         dnd_btn.setToolTip('Não perturbe')
         dnd_btn.setCursor(Qt.PointingHandCursor)
         dnd_btn.clicked.connect(self._show_dnd_menu)
@@ -1794,10 +2002,10 @@ class OrbitWindow(QMainWindow):
         # Focus toggle button
         focus_icon = 'chevron-left' if self._sidebar.isVisible() else 'chevron-right'
         focus_btn = QPushButton()
-        focus_btn.setIcon(svg_icon(focus_icon, 16, '#6c7086'))
-        focus_btn.setIconSize(QSize(16, 16))
+        focus_btn.setIcon(svg_icon(focus_icon, 18, '#6c7086'))
+        focus_btn.setIconSize(QSize(18, 18))
         focus_btn.setObjectName('hBtn')
-        focus_btn.setFixedSize(28, 28)
+        focus_btn.setFixedSize(32, 32)
         focus_btn.setToolTip('Modo foco (Ctrl+B)')
         focus_btn.setCursor(Qt.PointingHandCursor)
         focus_btn.clicked.connect(self._toggle_focus_mode)
@@ -1815,10 +2023,10 @@ class OrbitWindow(QMainWindow):
             name_id = 'hDanger' if is_danger else 'hBtn'
             ic_color = '#f38ba8' if is_danger else '#6c7086'
             b = QPushButton()
-            b.setIcon(svg_icon(icon_name, 16, ic_color))
-            b.setIconSize(QSize(16, 16))
+            b.setIcon(svg_icon(icon_name, 18, ic_color))
+            b.setIconSize(QSize(18, 18))
             b.setObjectName(name_id)
-            b.setFixedSize(28, 28)
+            b.setFixedSize(32, 32)
             b.setToolTip(tip)
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(slot)
@@ -1837,9 +2045,12 @@ class OrbitWindow(QMainWindow):
         self._service_start_time = time.time()
         self._active_service = service
         self._reset_hibernate_timer(service)
-        for sid, btn in self._svc_btns.items():
-            btn.setChecked(sid == service.id)
-            btn.set_active(sid == service.id)
+        # Update visual selection in the service list
+        active_item = self._svc_items.get(service.id)
+        if active_item:
+            self._svc_list.setCurrentItem(active_item)
+        else:
+            self._svc_list.clearSelection()
         # Update recent services list (quick switch)
         svc_id = service.id
         if svc_id in self._recent_services:
@@ -1853,6 +2064,15 @@ class OrbitWindow(QMainWindow):
             self._active_account = None
             self._refresh_header()
         self._save()
+
+    def _select_service_by_id(self, service_id: str):  # pragma: no cover
+        """Select a service by its ID — used by toast click handler."""
+        svc = next((s for s in self._services if s.id == service_id), None)
+        if svc:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            self._select_service(svc)
 
     def _select_account(self, account: Account):  # pragma: no cover
         if not self._active_service:
@@ -1897,6 +2117,9 @@ class OrbitWindow(QMainWindow):
             view.badge_changed.connect(
                 lambda count, svc=self._active_service: self._update_badge(svc, count)
             )
+            view.notification_received.connect(
+                lambda title, body, svc=self._active_service: self._on_push_notification(svc, title, body)
+            )
             view.load_status_changed.connect(
                 lambda s, sid=self._active_service.id: self._on_load_status(sid, s)
             )
@@ -1905,7 +2128,11 @@ class OrbitWindow(QMainWindow):
             self._status_badge.set_status('connecting')
 
         self._wake_service(self._active_service, account)
-        self._stack.setCurrentWidget(self._views[key])
+        # Mark only the new view as active (controls badge-clear permission)
+        for v in self._views.values():
+            v.active = False
+        self._views[key].active = True
+        self._fade_switch(self._views[key])
 
         # Update status badge for the now-active view
         view = self._views[key]
@@ -1926,28 +2153,106 @@ class OrbitWindow(QMainWindow):
     def _update_badge(self, service: Service, count: int):  # pragma: no cover
         prev = service.unread
         service.unread = count
-        btn = self._svc_btns.get(service.id)
-        if btn:
-            btn.set_badge(count)
+        item = self._svc_items.get(service.id)
+        if item:
+            item.setData(_ROLE_BADGE, count)
+            self._svc_list.viewport().update()
+            # Badge pulse animation when count increases
             if count > prev and count > 0:
-                btn.pulse_badge()
+                self._pulse_badge(item)
         self._update_title_badge()
         if count > prev and count > 0:
             add_notification(service.id, service.name, f'{service.name}: {count} mensagem(s)')
             is_active = self._active_service and self._active_service.id == service.id
-            # Check focus profile muting
             svc_tags = getattr(service, 'tags', [])
             muted_by_profile = _svc_muted_by_profile(svc_tags)
-            if not is_active and hasattr(self, '_tray') and not self._is_dnd_active() and not muted_by_profile:
-                self._tray.showMessage(
-                    service.name,
-                    f'{count} mensagem(ns) não lida(s)',
-                    QSystemTrayIcon.MessageIcon.Information,
-                    4000,
-                )
+            win_focused = self.isActiveWindow()
+            should_notify = (not is_active or not win_focused)
+            if should_notify and not self._is_dnd_active() and not muted_by_profile:
+                notif_style = self._settings.get('notification_style', 'orbit')
+                # Track last toast time per service for deduplication (badge vs push)
+                if not hasattr(self, '_last_toast_time'):
+                    self._last_toast_time: dict = {}
+                import time as _time
+                now = _time.monotonic()
+                last = self._last_toast_time.get(service.id, 0)
+                if now - last > 2.0:  # debounce 2s to avoid badge+push duplicates
+                    if notif_style in ('orbit', 'both'):
+                        self._show_toast(service)
+                        self._last_toast_time[service.id] = now
+                    if notif_style in ('system', 'both'):
+                        if hasattr(self, '_tray') and self._tray.isVisible():
+                            self._tray.showMessage(
+                                service.name,
+                                f'{count} mensagem(ns) não lida(s)',
+                                QSystemTrayIcon.MessageIcon.Information,
+                                4000,
+                            )
                 if service.notification_sound:
                     play_sound(service.notification_sound)
         self._save()
+
+    def _pulse_badge(self, item: QListWidgetItem):  # pragma: no cover
+        """Animate badge opacity: 1 → 0.4 → 1 twice for visual pop."""
+        if not hasattr(self, '_badge_pulse_anim'):
+            self._badge_pulse_anim = None
+        # Use a viewport opacity flicker (simple approach: schedule 2 repaints)
+        vp = self._svc_list.viewport()
+        def _repaint():
+            vp.update()
+        for delay in (80, 160, 240, 320):
+            QTimer.singleShot(delay, _repaint)
+
+    def _show_toast(self, service: Service):  # pragma: no cover
+        """Show an in-app slide-in toast notification."""
+        # Find the right parent: the central widget so toast is positioned correctly
+        parent = self.centralWidget() or self
+        toast = _ToastNotification(service, parent=parent)
+        toast.clicked.connect(self._select_service_by_id)
+        toast.show_animated()
+
+    def _on_push_notification(self, service: Service, title: str, body: str):  # pragma: no cover
+        """Handle a Web Notification API push from an embedded service."""
+        svc_tags = getattr(service, 'tags', [])
+        if self._is_dnd_active() or _svc_muted_by_profile(svc_tags):
+            return
+        add_notification(service.id, service.name, title, body)
+        notif_style = self._settings.get('notification_style', 'orbit')
+        import time as _time
+        if not hasattr(self, '_last_toast_time'):
+            self._last_toast_time: dict = {}
+        now = _time.monotonic()
+        last = self._last_toast_time.get(service.id, 0)
+        if now - last > 2.0:  # debounce 2s to avoid badge+push duplicates
+            if notif_style in ('orbit', 'both'):
+                self._show_toast(service)
+                self._last_toast_time[service.id] = now
+            if notif_style in ('system', 'both'):
+                if hasattr(self, '_tray') and self._tray.isVisible():
+                    self._tray.showMessage(
+                        f'{service.name}: {title}',
+                        body,
+                        QSystemTrayIcon.MessageIcon.Information,
+                        5000,
+                    )
+        if service.notification_sound:
+            play_sound(service.notification_sound)
+
+    def _fade_switch(self, widget):  # pragma: no cover
+        """Fade-in the target widget in the stack with a 150ms animation."""
+        if self._stack.currentWidget() is widget:
+            return
+        effect = QGraphicsOpacityEffect(widget)
+        widget.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b'opacity', widget)
+        anim.setDuration(150)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._stack.setCurrentWidget(widget)
+        anim.start()
+        # Keep reference so GC doesn't collect it
+        widget._fade_anim = anim
 
     def _on_active_load_status(self, status: str):  # pragma: no cover
         self._status_badge.set_status(
@@ -1957,13 +2262,11 @@ class OrbitWindow(QMainWindow):
         )
 
     def _update_title(self):  # pragma: no cover
-        total_unread = sum(s.unread for s in self._services)
         svc_name = self._active_service.name if self._active_service else ''
-        badge = f'({total_unread}) ' if total_unread > 0 else ''
         if svc_name:
-            self.setWindowTitle(f'{badge}{svc_name} — Orbit')
+            self.setWindowTitle(f'{svc_name} — Orbit')
         else:
-            self.setWindowTitle(f'{badge}Orbit')
+            self.setWindowTitle('Orbit')
 
     def _update_title_badge(self):  # pragma: no cover
         total = sum(s.unread for s in self._services)
@@ -2011,9 +2314,10 @@ class OrbitWindow(QMainWindow):
         self._tray.setIcon(QIcon(px))
 
     def _on_load_status(self, service_id: str, status: str):  # pragma: no cover
-        btn = self._svc_btns.get(service_id)
-        if btn:
-            btn.set_status(status)
+        item = self._svc_items.get(service_id)
+        if item:
+            item.setData(_ROLE_STATUS, status)
+            self._svc_list.viewport().update()
 
     # ── context menu ──────────────────────────────────────────────────────────
 
@@ -2037,30 +2341,11 @@ class OrbitWindow(QMainWindow):
         toggle_enabled_act.triggered.connect(lambda: self._toggle_service_enabled(service))
 
         is_google = any(t in service.service_type for t in _GOOGLE_TYPES)
-        sync_act = None
+        google_login_act = None
         if is_google:
             menu.addSeparator()
-            sync_act = menu.addAction('Sincronizar cookies do Chrome')
-            sync_act.setIcon(svg_icon('arrow-path', 14, '#6c7086'))
-
-        # Group actions
-        menu.addSeparator()
-        create_group_act = menu.addAction('Criar grupo...')
-        create_group_act.setIcon(svg_icon('folder', 14, '#6c7086'))
-        create_group_act.triggered.connect(lambda: self._create_group_for(service))
-
-        groups = getattr(self._active_workspace, 'groups', [])
-        if groups:
-            move_menu = menu.addMenu('Mover para grupo...')
-            move_menu.setIcon(svg_icon('folder', 14, '#6c7086'))
-            for g in groups:
-                act = move_menu.addAction(g.name)
-                act.setCheckable(True)
-                act.setChecked(service.id in g.service_ids)
-                act.triggered.connect(lambda _, gid=g.id: self._move_to_group(service, gid))
-            move_menu.addSeparator()
-            no_group_act = move_menu.addAction('Sem grupo')
-            no_group_act.triggered.connect(lambda: self._move_to_group(service, None))
+            google_login_act = menu.addAction('Como fazer login no Google...')
+            google_login_act.setIcon(svg_icon('information-circle', 14, '#89b4fa'))
 
         menu.addSeparator()
         remove_act = menu.addAction('Remover serviço')
@@ -2110,9 +2395,18 @@ class OrbitWindow(QMainWindow):
                 acc = (self._active_account if self._active_account and self._active_account in service.accounts
                        else service.accounts[0])
                 self._open_pip(service, acc)
-        elif sync_act and action == sync_act:
-            self._select_service(service)
-            self._sync_chrome_cookies(service)
+        elif google_login_act and action == google_login_act:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, 'Login no Google — Orbit',
+                'Para usar Gmail, Google Meet e outros serviços do Google no Orbit:\n\n'
+                '1. Clique na tela do serviço\n'
+                '2. Selecione sua conta na tela "Escolha uma conta"\n'
+                '3. Caso apareça bloqueio de login, clique em "Usar outra conta" '
+                'e conclua o login normalmente\n'
+                '4. O Orbit salva a sessão — nas próximas vezes abre direto logado\n\n'
+                'ℹ️  Importar cookies do Chrome não funciona mais devido às '
+                'proteções de segurança do Google (DBSC) no Chrome 127+.'
+            )
         elif action == remove_act:
             self._remove_service(service)
 
@@ -2199,81 +2493,6 @@ class OrbitWindow(QMainWindow):
     def _save(self):  # pragma: no cover
         save_workspaces(self._workspaces)
 
-    # ── chrome cookie sync ────────────────────────────────────────────────────
-
-    def _sync_chrome_cookies(self, service: Service):  # pragma: no cover
-        """Import Google cookies from any browser and reload views for this service."""
-        import subprocess
-        import time
-        from PySide6.QtWidgets import QMessageBox
-        from .cookie_bridge import find_all_browsers
-
-        # Pick the best browser available
-        all_browsers = find_all_browsers()
-        if not all_browsers:
-            QMessageBox.warning(self, 'Orbit',
-                'Nenhum navegador compatível encontrado.\n\n'
-                'Instale Chrome, Brave, Edge, Firefox ou Opera.')
-            return
-
-        # Use the first detected browser (Chromium priority, then Firefox)
-        browser_info = all_browsers[0]
-        browser_name = browser_info['name']
-        browser_exe  = browser_info['exe']
-        is_firefox   = browser_info['type'] == 'firefox'
-
-        if not is_firefox and is_browser_running(browser_exe):
-            reply = QMessageBox.question(
-                self, 'Orbit — Sincronizar sessão',
-                f'O {browser_name} está aberto e bloqueando o acesso aos cookies.\n\n'
-                f'Deseja fechar o {browser_name} automaticamente para sincronizar?\n'
-                f'Ele será fechado agora e você poderá reabri-lo depois.',
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-
-            try:
-                subprocess.run(['taskkill', '/IM', browser_exe, '/F'],
-                               capture_output=True, timeout=10)
-                for _ in range(10):
-                    time.sleep(0.5)
-                    if not is_browser_running(browser_exe):
-                        break
-                # Extra wait to ensure file locks are fully released
-                time.sleep(1.5)
-            except Exception:
-                pass
-
-            if is_browser_running(browser_exe):
-                QMessageBox.warning(self, 'Orbit',
-                    f'Não foi possível fechar o {browser_name}.\n'
-                    f'Feche manualmente e tente novamente.')
-                return
-
-        total = 0
-        for acc in service.accounts:
-            key = (service.id, acc.id)
-            if key in self._views:
-                n = import_google_cookies(self._views[key]._profile)
-                if n:
-                    total += n
-                    self._views[key].reload()
-
-        if total > 0:
-            msg = (f'✅ {total} cookies importados do {browser_name}.\n\n'
-                   f'A página foi recarregada com sua sessão do Google.')
-            if not is_firefox:
-                msg += f'\nVocê já pode reabrir o {browser_name}.'
-            QMessageBox.information(self, 'Orbit', msg)
-        else:
-            detected = ', '.join(b['name'] for b in all_browsers)
-            QMessageBox.warning(self, 'Orbit',
-                f'Nenhum cookie do Google encontrado.\n\n'
-                f'Navegadores detectados: {detected}\n\n'
-                f'Certifique-se de estar logado no Google em um desses navegadores.')
-
     # ── tray ──────────────────────────────────────────────────────────────────
 
     def _export_backup(self):  # pragma: no cover
@@ -2319,9 +2538,10 @@ class OrbitWindow(QMainWindow):
             self._notif_center.toggle()
 
     def _on_service_status_changed(self, svc_id: str, status: str):  # pragma: no cover
-        btn = self._svc_btns.get(svc_id)
-        if btn:
-            btn.set_status(status)
+        item = self._svc_items.get(svc_id)
+        if item:
+            item.setData(_ROLE_STATUS, status)
+            self._svc_list.viewport().update()
 
     def _get_accent_color(self) -> str:  # pragma: no cover
         ws = getattr(self, '_active_workspace', None)
@@ -2844,51 +3064,26 @@ class OrbitWindow(QMainWindow):
         self._tray.setToolTip('Orbit')
 
         tray_menu = QMenu()
+
+        # Primary actions
         show_act = tray_menu.addAction('Mostrar Orbit')
         show_act.triggered.connect(self._show_and_raise)
         tray_menu.addSeparator()
+
+        # Lock
         lock_act = tray_menu.addAction('Bloquear agora')
         lock_act.setIcon(svg_icon('lock-closed', 14, '#6c7086'))
         lock_act.triggered.connect(self._lock_now)
-        pin_act = tray_menu.addAction('Configurar PIN...')
-        pin_act.setIcon(svg_icon('key', 14, '#6c7086'))
-        pin_act.triggered.connect(self._show_pin_config_dialog)
-        encrypt_act = tray_menu.addAction('Criptografar arquivos...')
-        encrypt_act.setIcon(svg_icon('lock-closed', 14, '#6c7086'))
-        encrypt_act.triggered.connect(self._show_encrypt_config_dialog)
         tray_menu.addSeparator()
-        startup_act = tray_menu.addAction('Iniciar com o Windows')
-        startup_act.setCheckable(True)
-        startup_act.setChecked(self._is_startup_enabled())
-        startup_act.triggered.connect(lambda checked: self._set_startup(checked))
-        tray_menu.addSeparator()
+
+        # Privacy & focus
+        self._tray_privacy_act = tray_menu.addAction('Modo Privacidade')
+        self._tray_privacy_act.setIcon(svg_icon('eye-slash', 14, '#6c7086'))
+        self._tray_privacy_act.setCheckable(True)
+        self._tray_privacy_act.setChecked(self._privacy_mode)
+        self._tray_privacy_act.triggered.connect(self._toggle_privacy_mode)
+
         from PySide6.QtGui import QActionGroup
-        theme_menu = tray_menu.addMenu('Tema')
-        theme_group = QActionGroup(theme_menu)
-        theme_group.setExclusive(True)
-        for t_id, t_label, t_icon in [('dark', 'Escuro', 'moon'), ('light', 'Claro', 'sun'), ('system', 'Automático', 'computer-desktop')]:
-            act = theme_menu.addAction(t_label)
-            act.setIcon(svg_icon(t_icon, 14, '#6c7086'))
-            act.setCheckable(True)
-            act.setChecked(self._theme == t_id)
-            act.triggered.connect(lambda _, t=t_id: self._apply_theme(t))
-            theme_group.addAction(act)
-        accent_menu = tray_menu.addMenu('🎨 Accent')
-        for accent_name in ACCENTS:
-            act = accent_menu.addAction(f'● {accent_name}')
-            act.setCheckable(True)
-            act.setChecked(accent_name == self._accent)
-            act.triggered.connect(lambda checked, n=accent_name: self._set_accent(n))
-        tray_menu.addSeparator()
-        ad_block_act = tray_menu.addAction('Bloquear anúncios')
-        ad_block_act.setIcon(svg_icon('shield-check', 14, '#6c7086'))
-        ad_block_act.setCheckable(True)
-        ad_block_act.setChecked(load_settings().get('ad_block', True))
-        ad_block_act.triggered.connect(lambda checked: self._toggle_ad_block(checked))
-        update_act = tray_menu.addAction('Verificar atualizações')
-        update_act.setIcon(svg_icon('arrow-path', 14, '#6c7086'))
-        update_act.triggered.connect(lambda: self._check_updates(silent=False))
-        tray_menu.addSeparator()
 
         # Focus profile submenu
         focus_menu = tray_menu.addMenu(f'🎯 {_t("focus_profile")}')
@@ -2911,27 +3106,25 @@ class OrbitWindow(QMainWindow):
         self._tray_dnd_menu = dnd_menu
         self._build_dnd_menu(dnd_menu)
 
-        # Privacy mode
-        self._tray_privacy_act = tray_menu.addAction('🕶️ Modo Privacidade')
-        self._tray_privacy_act.setCheckable(True)
-        self._tray_privacy_act.setChecked(self._privacy_mode)
-        self._tray_privacy_act.triggered.connect(self._toggle_privacy_mode)
-
         tray_menu.addSeparator()
+
+        # Tools
         stats_act = tray_menu.addAction('Estatísticas')
         stats_act.setIcon(svg_icon('chart-bar', 14, '#6c7086'))
         stats_act.triggered.connect(self._show_stats_dialog)
         shortcuts_act = tray_menu.addAction('Atalhos')
         shortcuts_act.setIcon(svg_icon('command-line', 14, '#6c7086'))
         shortcuts_act.triggered.connect(self._show_shortcuts_dialog)
-        reading_list_act = tray_menu.addAction('📚 Lista de Leitura')
+        reading_list_act = tray_menu.addAction('Lista de Leitura')
         reading_list_act.triggered.connect(self._show_reading_list)
-        ws_schedule_act = tray_menu.addAction('⏰ Agendamento de Workspace')
+        ws_schedule_act = tray_menu.addAction('Agendamento de Workspace')
         ws_schedule_act.triggered.connect(self._show_workspace_schedule)
-        audit_act = tray_menu.addAction(f'📋 {_t("view_audit_log")}')
+        audit_act = tray_menu.addAction(_t('view_audit_log'))
         audit_act.triggered.connect(self._show_audit_log)
 
         tray_menu.addSeparator()
+
+        # Backup (kept in tray for quick access)
         backup_menu = tray_menu.addMenu('Backup')
         backup_menu.setIcon(svg_icon('archive-box-arrow-down', 14, '#6c7086'))
         export_act = backup_menu.addAction('Exportar configurações')
@@ -2940,16 +3133,13 @@ class OrbitWindow(QMainWindow):
         import_act = backup_menu.addAction('Importar configurações')
         import_act.setIcon(svg_icon('arrow-down-tray', 14, '#6c7086'))
         import_act.triggered.connect(self._import_backup)
-        cloud_act = tray_menu.addAction('Sincronização na nuvem...')
-        cloud_act.setIcon(svg_icon('cloud-arrow-up', 14, '#6c7086'))
-        cloud_act.triggered.connect(self._show_cloud_sync_dialog)
-        webdav_act = tray_menu.addAction('WebDAV / OneDrive...')
-        webdav_act.setIcon(svg_icon('server', 14, '#6c7086'))
-        webdav_act.triggered.connect(self._show_webdav_dialog)
-        rambox_act = tray_menu.addAction('Importar do Rambox/Ferdium...')
-        rambox_act.setIcon(svg_icon('arrow-down-tray', 14, '#6c7086'))
-        rambox_act.triggered.connect(self._show_import_dialog)
 
+        tray_menu.addSeparator()
+
+        # Settings + Quit
+        settings_act = tray_menu.addAction('Configurações...')
+        settings_act.setIcon(svg_icon('cog-6-tooth', 14, '#6c7086'))
+        settings_act.triggered.connect(self._show_settings)
         tray_menu.addSeparator()
         quit_act = tray_menu.addAction('Fechar Orbit')
         quit_act.triggered.connect(QApplication.instance().quit)
@@ -2959,7 +3149,8 @@ class OrbitWindow(QMainWindow):
             lambda reason: self._show_and_raise()
             if reason == QSystemTrayIcon.ActivationReason.Trigger else None
         )
-        self._tray.show()
+        if load_settings().get('show_tray', True):
+            self._tray.show()
 
     def _show_and_raise(self):  # pragma: no cover
         self.show()
@@ -3221,7 +3412,7 @@ class OrbitWindow(QMainWindow):
         title_bar.setStyleSheet('background:#181825;')
         tb_layout = QHBoxLayout(title_bar)
         tb_layout.setContentsMargins(8, 0, 4, 0)
-        tb_lbl = QLabel(f'🐙 {service.name}')
+        tb_lbl = QLabel(f'⬤ {service.name}')
         tb_lbl.setStyleSheet('color:#cdd6f4; font-size:11px;')
         tb_layout.addWidget(tb_lbl)
         tb_layout.addStretch()
@@ -3394,6 +3585,114 @@ class OrbitWindow(QMainWindow):
                 winreg.SetValueEx(key, '', 0, winreg.REG_SZ, f'"{exe}" "%1"')
         except Exception:
             pass  # Non-fatal
+
+    # ── general settings ──────────────────────────────────────────────────────
+
+    def _show_settings(self):  # pragma: no cover
+        """Open the General Settings dialog (Ctrl+,)."""
+        from .dialogs import GeneralSettingsDialog
+        dlg = GeneralSettingsDialog(
+            callbacks={
+                'apply_theme':       self._apply_theme,
+                'set_accent':        self._set_accent,
+                'set_startup':       self._set_startup,
+                'is_startup_enabled': self._is_startup_enabled,
+                'show_pin_config':   self._show_pin_config_dialog,
+                'show_encrypt_config': self._show_encrypt_config_dialog,
+                'check_updates':     lambda: self._check_updates(silent=False),
+                'show_cloud_sync':   self._show_cloud_sync_dialog,
+                'show_webdav':       self._show_webdav_dialog,
+                'show_import':       self._show_import_dialog,
+                'set_ad_block':      self._toggle_ad_block,
+                'apply_sidebar_widths': self._apply_sidebar_widths,
+                'apply_tray_settings':  self._apply_tray_settings,
+                'apply_workspace_enabled': self.set_workspaces_enabled,
+            },
+            parent=self,
+        )
+        dlg.exec()
+
+    def _apply_sidebar_widths(self, compact_w: int, expanded_w: int):  # pragma: no cover
+        """Apply new sidebar widths from settings without requiring restart."""
+        target_w = compact_w if self._sidebar_compact else expanded_w
+        total = sum(self._splitter.sizes())
+        self._splitter.setSizes([target_w, total - target_w, 0])
+
+    def _apply_tray_settings(self, show_tray: bool):  # pragma: no cover
+        """Show or hide the system tray icon based on settings."""
+        if hasattr(self, '_tray'):
+            if show_tray:
+                self._tray.show()
+            else:
+                self._tray.hide()
+
+    def _create_view_only(self, service, account) -> 'ServiceView':  # pragma: no cover
+        """Create a ServiceView in the background without switching the visible service.
+
+        Unlike _select_account(), this method does NOT call _fade_switch() or alter the
+        active service/account state — safe to call during preload.
+        """
+        from PySide6.QtNetwork import QNetworkProxy
+        key = (service.id, account.id)
+        if key in self._views:
+            return self._views[key]
+        # Apply proxy (same logic as _select_account)
+        proxy_str = getattr(service, 'proxy', '')
+        if proxy_str:
+            from urllib.parse import urlparse
+            p = urlparse(proxy_str)
+            qt_proxy = QNetworkProxy()
+            qt_proxy.setType(
+                QNetworkProxy.ProxyType.Socks5Proxy
+                if p.scheme == 'socks5'
+                else QNetworkProxy.ProxyType.HttpProxy
+            )
+            qt_proxy.setHostName(p.hostname or '')
+            qt_proxy.setPort(p.port or 8080)
+            if p.username:
+                qt_proxy.setUser(p.username)
+            if p.password:
+                qt_proxy.setPassword(p.password)
+            QNetworkProxy.setApplicationProxy(qt_proxy)
+        view = ServiceView(account.profile_name, account.url,
+                           service_type=service.service_type,
+                           custom_css=service.custom_css,
+                           custom_js=service.custom_js,
+                           zoom=service.zoom,
+                           incognito=getattr(service, 'incognito', False),
+                           spellcheck=getattr(service, 'spellcheck', True))
+        view.badge_changed.connect(
+            lambda count, svc=service: self._update_badge(svc, count)
+        )
+        view.notification_received.connect(
+            lambda title, body, svc=service: self._on_push_notification(svc, title, body)
+        )
+        view.load_status_changed.connect(
+            lambda s, sid=service.id: self._on_load_status(sid, s)
+        )
+        self._views[key] = view
+        self._loaded_services.add(service.id)
+        self._stack.addWidget(view)
+        return view
+
+    def _schedule_service_preload(self, services: list) -> None:  # pragma: no cover
+        """Pre-warm service WebViews in the background after startup, one every 800 ms.
+
+        Uses _create_view_only() so the currently visible service is never displaced.
+        """
+        def _load_next(remaining):
+            if not remaining:
+                return
+            svc = remaining[0]
+            rest = remaining[1:]
+            ha = getattr(svc, 'hibernate_after', None)
+            if svc.accounts and ha != 0:
+                key = (svc.id, svc.accounts[0].id)
+                if key not in self._views:
+                    self._create_view_only(svc, svc.accounts[0])
+            QTimer.singleShot(800, lambda: _load_next(rest))
+
+        QTimer.singleShot(2000, lambda: _load_next(services))
 
     def _check_updates(self, silent: bool = False):  # pragma: no cover
         from .updater import check_for_update
@@ -3677,6 +3976,7 @@ class OrbitWindow(QMainWindow):
             name=entry.name,
             icon=entry.icon,
             color=entry.color,
+            custom_css=entry.custom_css or '',
             accounts=[Account(id=acc_id, label=entry.name, url=url,
                               profile_name=profile_name, authuser=0)],
         )
@@ -3690,9 +3990,20 @@ class OrbitWindow(QMainWindow):
         settings = load_settings()
         settings['geometry'] = {'x': g.x(), 'y': g.y(), 'w': g.width(), 'h': g.height()}
         save_settings(settings)
-        event.ignore()
-        self.hide()
-        self._tray.showMessage('Orbit', 'Rodando em segundo plano.', QSystemTrayIcon.MessageIcon.Information, 2000)
+
+        if settings.get('minimize_to_tray', False):
+            event.ignore()
+            self.hide()
+            if hasattr(self, '_tray') and self._tray.isVisible():
+                self._tray.showMessage(
+                    'Orbit',
+                    'Orbit continua rodando em segundo plano. Clique no ícone da bandeja para restaurar.',
+                    QSystemTrayIcon.MessageIcon.Information,
+                    3000,
+                )
+        else:
+            event.accept()
+            QApplication.instance().quit()
 
     # ── hibernate ─────────────────────────────────────────────────────────────
 
@@ -3858,34 +4169,23 @@ class OrbitWindow(QMainWindow):
         _populate()
         dlg.exec()
 
-    # ── drag & drop sidebar reordering ────────────────────────────────────────
+    # ── sidebar list signals ──────────────────────────────────────────────────
 
-    def _svc_drag_enter(self, event):  # pragma: no cover
-        if event.mimeData().hasFormat('application/x-orbit-service'):
-            event.acceptProposedAction()
+    def _on_svc_item_clicked(self, item: QListWidgetItem):  # pragma: no cover
+        svc = item.data(_ROLE_SVC)
+        if svc and getattr(svc, 'enabled', True):
+            self._select_service(svc)
 
-    def _svc_drop(self, event):  # pragma: no cover
-        if not event.mimeData().hasFormat('application/x-orbit-service'):
+    def _on_svc_ctx_menu(self, pos):  # pragma: no cover
+        item = self._svc_list.itemAt(pos)
+        if not item:
             return
-        svc_id = event.mimeData().data('application/x-orbit-service').toStdString()
-        dragged = next((s for s in self._services if s.id == svc_id), None)
-        if not dragged:
-            return
-        drop_y = event.position().toPoint().y()
-        target_idx = len(self._services) - 1
-        for i, svc in enumerate(self._services):
-            btn = self._svc_btns.get(svc.id)
-            if btn:
-                btn_center_y = btn.mapTo(self._svc_container, btn.rect().center()).y()
-                if drop_y < btn_center_y:
-                    target_idx = i
-                    break
-        self._services.remove(dragged)
-        target_idx = min(target_idx, len(self._services))
-        self._services.insert(target_idx, dragged)
-        self._rebuild_sidebar()
-        self._save()
-        event.acceptProposedAction()
+        svc = item.data(_ROLE_SVC)
+        if svc:
+            self._show_ctx_menu(svc, self._svc_list.viewport().mapToGlobal(pos))
+
+    def _on_svc_item_entered(self, item: QListWidgetItem):  # pragma: no cover
+        pass  # Badge already shows the count — no extra tooltip needed
 
     def handle_url_scheme(self, url: str):
         """Handle an orbit:// URL passed via command-line or protocol activation.
@@ -3919,3 +4219,4 @@ class OrbitWindow(QMainWindow):
                         break
         except Exception:
             pass
+

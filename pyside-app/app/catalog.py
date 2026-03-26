@@ -35,6 +35,7 @@ class CatalogEntry:
     description: str
     favicon_url: str = ''
     category: str = ''
+    custom_css: str = ''
 
 
 CATALOG: List[CatalogEntry] = [

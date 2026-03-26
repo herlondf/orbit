@@ -11,9 +11,12 @@ from __future__ import annotations
 import os
 import re
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QStandardPaths, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWebEngineCore import (
+    QWebEngineDownloadRequest,
     QWebEnginePage,
+    QWebEngineNotification,
     QWebEngineProfile,
     QWebEngineScript,
     QWebEngineSettings,
@@ -23,8 +26,8 @@ from PySide6.QtWebEngineCore import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from .storage import PROFILES_DIR
-from .cookie_bridge import import_google_cookies
 from .adblocker import is_blocked
+from .toast import ToastManager
 from .slack_bridge import (
     is_slack_service, get_slack_ua, get_slack_sec_ch_ua,
     SLACK_STEALTH_JS, SLACK_BLOCKED_OVERLAY_JS,
@@ -43,11 +46,11 @@ def set_ad_block(enabled: bool):
     _ad_block_enabled = enabled
 
 # Must match the Chromium version embedded in the installed PySide6
-_CHROME_VER = '130'
+_CHROME_VER = '134'
 USER_AGENT = (
     f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
     f'AppleWebKit/537.36 (KHTML, like Gecko) '
-    f'Chrome/{_CHROME_VER}.0.0.0 Safari/537.36'
+    f'Chrome/{_CHROME_VER}.0.6998.178 Safari/537.36'
 )
 
 # Injected at DocumentCreation in MainWorld.
@@ -80,12 +83,12 @@ _STEALTH_JS = f"""
                     architecture: 'x86',
                     bitness: '64',
                     brands: this.brands,
-                    fullVersionList: this.brands.map(b => ({{ brand: b.brand, version: b.version + '.0.0.0' }})),
+                    fullVersionList: this.brands.map(b => ({{ brand: b.brand, version: b.version + '.0.6998.178' }})),
                     mobile: false,
                     model: '',
                     platform: 'Windows',
                     platformVersion: '10.0.0',
-                    uaFullVersion: '{_CHROME_VER}.0.0.0'
+                    uaFullVersion: '{_CHROME_VER}.0.6998.178'
                 }});
             }},
             toJSON: function() {{
@@ -95,10 +98,49 @@ _STEALTH_JS = f"""
         Object.defineProperty(navigator, 'userAgentData', {{ get: () => uaData }});
     }} catch(e) {{}}
 
-    // 3. Emulate Chrome extension runtime
+    // 3. Complete window.chrome object — Google verifies .app, .csi, .loadTimes
     try {{
         if (!window.chrome) window.chrome = {{}};
-        if (!window.chrome.runtime) window.chrome.runtime = {{}};
+        if (!window.chrome.runtime) {{
+            window.chrome.runtime = {{
+                connect: function() {{}},
+                sendMessage: function() {{}}
+            }};
+        }}
+        if (!window.chrome.app) {{
+            window.chrome.app = {{
+                isInstalled: false,
+                InstallState: {{ DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }},
+                RunningState: {{ CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }},
+                getDetails: function() {{ return null; }},
+                getIsInstalled: function() {{ return false; }},
+                installState: function(cb) {{ cb('not_installed'); }}
+            }};
+        }}
+        if (!window.chrome.csi) {{
+            window.chrome.csi = function() {{
+                return {{ startE: Date.now(), onloadT: Date.now(), pageT: Date.now(), tran: 15 }};
+            }};
+        }}
+        if (!window.chrome.loadTimes) {{
+            window.chrome.loadTimes = function() {{
+                return {{
+                    commitLoadTime: Date.now() / 1000,
+                    connectionInfo: 'h2',
+                    finishDocumentLoadTime: Date.now() / 1000,
+                    finishLoadTime: Date.now() / 1000,
+                    firstPaintAfterLoadTime: 0,
+                    firstPaintTime: Date.now() / 1000,
+                    navigationType: 'Other',
+                    npnNegotiatedProtocol: 'h2',
+                    requestTime: Date.now() / 1000,
+                    startLoadTime: Date.now() / 1000,
+                    wasAlternateProtocolAvailable: false,
+                    wasFetchedViaSpdy: true,
+                    wasNpnNegotiated: true
+                }};
+            }};
+        }}
     }} catch(e) {{}}
 
     // 4. Non-empty plugins list (headless has 0)
@@ -111,6 +153,13 @@ _STEALTH_JS = f"""
     // 5. Realistic language list
     try {{
         Object.defineProperty(navigator, 'languages', {{ get: () => ['pt-BR','pt','en-US','en'] }});
+    }} catch(e) {{}}
+
+    // 6. Sync appVersion with UA
+    try {{
+        Object.defineProperty(navigator, 'appVersion', {{
+            get: () => '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CHROME_VER}.0.6998.178 Safari/537.36'
+        }});
     }} catch(e) {{}}
 }})();
 """
@@ -127,7 +176,7 @@ class _StealthInterceptor(QWebEngineUrlRequestInterceptor):
     _SEC_CH_UA = (
         f'"Chromium";v="{_CHROME_VER}", '
         f'"Google Chrome";v="{_CHROME_VER}", '
-        f'"Not?A_Brand";v="99"'
+        f'"Not A(Brand";v="99"'
     ).encode()
 
     def __init__(self, profile, user_agent: str = '', sec_ch_ua: str = ''):
@@ -322,6 +371,22 @@ class ServicePage(QWebEnginePage):  # pragma: no cover
     def __init__(self, profile: QWebEngineProfile, parent_view: 'ServiceView'):
         super().__init__(profile, parent_view)
         self._parent_view = parent_view
+        # Auto-grant browser permissions so services like WhatsApp can show notifications
+        self.featurePermissionRequested.connect(self._on_permission_requested)
+
+    def _on_permission_requested(self, origin, feature):
+        """Auto-grant notification and media permissions for embedded services."""
+        _GRANT = {
+            QWebEnginePage.Feature.Notifications,
+            QWebEnginePage.Feature.MediaAudioCapture,
+            QWebEnginePage.Feature.MediaVideoCapture,
+            QWebEnginePage.Feature.MediaAudioVideoCapture,
+            QWebEnginePage.Feature.Geolocation,
+        }
+        if feature in _GRANT:
+            self.setFeaturePermission(origin, feature, QWebEnginePage.PermissionPolicy.GrantedByUser)
+        else:
+            self.setFeaturePermission(origin, feature, QWebEnginePage.PermissionPolicy.DeniedByUser)
 
     def createWindow(self, win_type: QWebEnginePage.WebWindowType) -> QWebEnginePage:
         """
@@ -362,22 +427,23 @@ class ServiceView(QWebEngineView):  # pragma: no cover
 
     badge_changed = Signal(int)
     load_status_changed = Signal(str)
+    notification_received = Signal(str, str)  # title, body
 
     def __init__(self, profile_name: str, url: str, service_type: str = '', custom_css: str = '', custom_js: str = '', zoom: float = 1.0, incognito: bool = False, spellcheck: bool = True, parent=None):
         super().__init__(parent)
         self.is_destroyed = False
         self._url = url
         self._status: str = 'idle'
+        self.active: bool = False  # True when this view is the currently visible one
+        self._active_notifications: set = set()  # keeps QWebEngineNotification objects alive
 
         self._profile = make_profile(profile_name, incognito=incognito, service_type=service_type, spellcheck=spellcheck)
-
-        # Google blocks OAuth in embedded WebViews at the binary level.
-        # Importing existing Chrome cookies lets the user skip the login entirely.
-        # Skip cookie import for incognito profiles (no persistence).
-        if not incognito and any(t in service_type for t in _GOOGLE_TYPES):
-            imported = import_google_cookies(self._profile)
-            if imported:
-                print(f'[cookie_bridge] imported {imported} Google cookies from Chrome')
+        # NOTE: Google session cookies are NOT imported from Chrome here.
+        # Chrome 127+ uses Device Bound Session Credentials (DBSC / v20 cookies)
+        # that are cryptographically tied to the Chrome process and cannot be
+        # transferred to another process.  The Orbit profile is persistent on disk,
+        # so the user only needs to log in once; subsequent launches reuse the saved
+        # session automatically.  OAuth popups are handled by ServicePage.createWindow().
 
         if custom_css:
             css_script = QWebEngineScript()
@@ -403,9 +469,30 @@ class ServiceView(QWebEngineView):  # pragma: no cover
         self._page = ServicePage(self._profile, self)
         self.setPage(self._page)
 
+        # Register web notification presenter so push notifications from sites
+        # like Gmail are routed into Orbit instead of being silently dropped.
+        self._notif_presenter = self._make_notif_presenter()
+        self._profile.setNotificationPresenter(self._notif_presenter)
+
+        self._download_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+        self._profile.downloadRequested.connect(self._on_download_requested)
+
         self._page.titleChanged.connect(self._on_title_changed)
-        self._page.loadStarted.connect(lambda: self._on_load_status('loading'))
+        self._page.loadStarted.connect(self._on_load_started)
+        self._page.loadFinished.connect(self._on_page_loaded)
         self._page.loadFinished.connect(lambda ok: self._on_load_status('ready' if ok else 'error'))
+
+        self._page_stable = False
+        self._stable_timer = QTimer(self)
+        self._stable_timer.setSingleShot(True)
+        self._stable_timer.setInterval(10000)  # 10 s — gives SPAs time to fully init
+        self._stable_timer.timeout.connect(self._mark_stable)
+
+        # Delayed badge-clear: avoids zeroing badge on transient title changes (SPA navigations)
+        self._clear_timer = QTimer(self)
+        self._clear_timer.setSingleShot(True)
+        self._clear_timer.setInterval(3000)  # 3 s grace before emitting badge=0
+        self._clear_timer.timeout.connect(lambda: self.badge_changed.emit(0))
 
         self.load(QUrl(url))
         self.setZoomFactor(zoom)
@@ -414,13 +501,159 @@ class ServiceView(QWebEngineView):  # pragma: no cover
     def status(self) -> str:
         return self._status
 
+    def _on_download_requested(self, download: QWebEngineDownloadRequest):
+        download.setDownloadDirectory(self._download_dir)
+        download.accept()
+        download.isFinishedChanged.connect(lambda: self._on_download_finished(download))
+
+    def _on_download_finished(self, download: QWebEngineDownloadRequest):
+        window = self.window()
+        if download.state() == QWebEngineDownloadRequest.DownloadState.DownloadCompleted:
+            path = download.downloadDirectory()
+            filename = download.downloadFileName()
+            ToastManager.show(
+                window,
+                f"Download concluido: {filename}\nClique para abrir a pasta",
+                'success',
+                duration=6000,
+                on_click=lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)),
+            )
+        else:
+            ToastManager.show(window, "Download falhou", 'error')
+
+    def _on_load_started(self):
+        self._page_stable = False
+        self._stable_timer.stop()
+        self._on_load_status('loading')
+
+    def _on_page_loaded(self, ok: bool):
+        # Start the stability timer — only trust badge=0 after page settles
+        self._stable_timer.start()
+        # Telegram Web A and K don't reliably put unread count in the title
+        if 'telegram.org/a' in self._url or 'telegram.org/k' in self._url:
+            self._inject_telegram_badge_monitor()
+
+    def _inject_telegram_badge_monitor(self):
+        """Inject a JS badge monitor for Telegram Web A and K.
+        Also guards the CSS override: re-injects if Telegram's React renderer removes it."""
+        js = r"""(function() {
+  if (window._orbitTgMonitor) return;
+  window._orbitTgMonitor = true;
+
+  // Layout fix — only needed for Telegram K (inline widths set by JS)
+  var isK = location.pathname.indexOf('/k') !== -1;
+  if (isK) {
+    var CSS_ID = 'orbit-tg-css';
+    var CSS_TEXT = [
+      'html,body,#app,.columns-layout,.App{',
+      'min-width:0!important;width:100%!important;max-width:100%!important;',
+      'overflow:hidden!important}',
+      '#column-center{min-width:0!important}',
+      '#column-left{min-width:0!important}',
+      '#column-right{min-width:0!important}'
+    ].join('');
+    function ensureCSS() {
+      if (!document.getElementById(CSS_ID)) {
+        var s = document.createElement('style');
+        s.id = CSS_ID;
+        s.textContent = CSS_TEXT;
+        (document.head || document.documentElement).appendChild(s);
+      }
+    }
+    function fixLayout() {
+      var ids = ['app','column-left','column-center','column-right'];
+      ids.forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el && el.style.width) el.style.width = '';
+        if (el && el.style.maxWidth) el.style.maxWidth = '';
+      });
+      var cl = document.querySelector('.columns-layout');
+      if (cl) { cl.style.width = ''; cl.style.maxWidth = ''; }
+      window.dispatchEvent(new Event('resize'));
+    }
+    ensureCSS();
+    fixLayout();
+    setInterval(function() { ensureCSS(); fixLayout(); }, 2000);
+  }
+
+  function getUnread() {
+    // Strategy 1: class-based selectors (Telegram A and K)
+    var selectors = [
+      '[class*="ChatBadge"]',
+      '[class*="badge"]',
+      '[class*="Badge"]',
+      '[class*="unread-count"]',
+      '[class*="unreadCount"]'
+    ];
+    for (var i = 0; i < selectors.length; i++) {
+      var els = document.querySelectorAll(selectors[i]);
+      var total = 0;
+      for (var j = 0; j < els.length; j++) {
+        var txt = els[j].textContent.trim();
+        if (/^\d+$/.test(txt)) {
+          var n = parseInt(txt, 10);
+          if (n > 0) total += n;
+        }
+      }
+      if (total > 0) return total;
+    }
+    // Strategy 2: title fallback
+    var m = document.title.match(/\((\d+)\)/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  function sync() {
+    // Trust Telegram's own title count when present (tracks all folders)
+    var titleMatch = document.title.match(/\((\d+)\)/);
+    var titleCount = titleMatch ? parseInt(titleMatch[1], 10) : 0;
+    if (titleCount > 0) return;
+    // Fallback to DOM badge selectors
+    var n = getUnread();
+    if (n > 0) document.title = '(' + n + ') Telegram';
+  }
+  setInterval(sync, 1500);
+  sync();
+})();"""
+        self._page.runJavaScript(js)
+
+    def _mark_stable(self):
+        self._page_stable = True
+
     def _on_load_status(self, status: str):
         self._status = status
         self.load_status_changed.emit(status)
 
+    def _make_notif_presenter(self):
+        """Return a notification presenter closure for QWebEngineProfile.
+
+        Qt requires the presenter to be stored (not GC'd), so callers must
+        keep a reference to the returned callable (self._notif_presenter).
+        """
+        def _presenter(notification: QWebEngineNotification):
+            self._active_notifications.add(notification)
+            notification.show()  # Required: marks notification as shown in the browser
+            self.notification_received.emit(notification.title(), notification.message())
+            # Auto-close and release reference after 8 s
+            def _close_and_release(n=notification):
+                n.close()
+                self._active_notifications.discard(n)
+            QTimer.singleShot(8000, _close_and_release)
+        return _presenter
+
     def _on_title_changed(self, title: str):
-        m = re.match(r'\((\d+)\)', title)
-        self.badge_changed.emit(int(m.group(1)) if m else 0)
+        # Gmail: "Inbox (3) - user@gmail.com - Gmail" (count in the middle)
+        # Telegram: "(3) Telegram Web" (count at the start)
+        # re.search handles all formats; re.match would miss mid-string counts.
+        m = re.search(r'\((\d+)\)', title)
+        count = int(m.group(1)) if m else 0
+        if count > 0:
+            # Positive count — cancel any pending clear and emit immediately
+            self._clear_timer.stop()
+            self.badge_changed.emit(count)
+        elif self._page_stable and self.active:
+            # Only start the clear timer when actively viewing this service.
+            # A 3s grace period prevents transient SPA title changes from zeroing the badge.
+            if not self._clear_timer.isActive():
+                self._clear_timer.start()
 
     def set_zoom(self, factor: float):
         self.setZoomFactor(factor)

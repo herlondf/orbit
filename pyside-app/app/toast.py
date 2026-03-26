@@ -20,10 +20,13 @@ _active_toasts: list['_Toast'] = []
 
 
 class _Toast(QWidget):
-    def __init__(self, parent: QWidget, message: str, kind: ToastKind = 'info', duration: int = 3500):
+    def __init__(self, parent: QWidget, message: str, kind: ToastKind = 'info', duration: int = 3500, on_click=None):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self._on_click = on_click
+        if on_click:
+            self.setCursor(Qt.PointingHandCursor)
 
         bg, fg = _COLORS.get(kind, _COLORS['info'])
         icon = _ICONS.get(kind, 'ℹ')
@@ -76,6 +79,13 @@ class _Toast(QWidget):
         y = pr.bottom() - self.height() - margin - stack_offset
         self.move(parent.mapToGlobal(QPoint(x, y)))
 
+    def mousePressEvent(self, event):
+        if self._on_click:
+            self._on_click()
+            self._cleanup()
+            return
+        super().mousePressEvent(event)
+
     def _start_fade(self):
         self._fade.start()
 
@@ -88,5 +98,5 @@ class _Toast(QWidget):
 
 class ToastManager:
     @staticmethod
-    def show(parent: QWidget, message: str, kind: ToastKind = 'info', duration: int = 3500):
-        _Toast(parent, message, kind, duration)
+    def show(parent: QWidget, message: str, kind: ToastKind = 'info', duration: int = 3500, on_click=None):
+        _Toast(parent, message, kind, duration, on_click=on_click)

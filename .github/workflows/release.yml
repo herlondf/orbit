@@ -220,7 +220,7 @@ jobs:
             | File | Description |
             |------|-------------|
             | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.zip` | 📦 Portable — unzip and run `Orbit.exe` |
-            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.msi` | 🔧 MSI Installer (Windows 10+, recommended) |
+            | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.msi` | 🔧 MSI Installer (Windows 10/11, recommended) |
             | `Orbit-${{ needs.prepare.outputs.version }}-win-x64.msix` | 📱 MSIX package (Windows 10/11) |
             | `install-orbit.ps1` | ⚙️ MSIX install helper (imports cert + installs) |
             | `Orbit-Dev.cer` | 🔑 Developer certificate (needed for MSIX) |
