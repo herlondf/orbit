@@ -3713,6 +3713,16 @@ class OrbitWindow(QMainWindow):
 
         tray_menu.addSeparator()
 
+        # Feedback
+        tray_menu.addSeparator()
+        bug_act = tray_menu.addAction('Reportar Bug')
+        bug_act.setIcon(svg_icon('bug-ant', 14, '#f38ba8'))
+        bug_act.triggered.connect(self._report_bug)
+        suggest_act = tray_menu.addAction('Sugerir Melhoria')
+        suggest_act.setIcon(svg_icon('light-bulb', 14, '#f9e2af'))
+        suggest_act.triggered.connect(self._suggest_improvement)
+        tray_menu.addSeparator()
+
         # Settings + Quit
         settings_act = tray_menu.addAction('Configurações...')
         settings_act.setIcon(svg_icon('cog-6-tooth', 14, '#6c7086'))
@@ -4220,6 +4230,44 @@ class OrbitWindow(QMainWindow):
             parent=self,
         )
         dlg.exec()
+
+    def _report_bug(self):  # pragma: no cover
+        """Open GitHub issue form pre-filled as bug report."""
+        import platform
+        from urllib.parse import quote
+        from PySide6.QtGui import QDesktopServices
+        from .updater import GITHUB_REPO
+        svc_list = ', '.join(s.name for s in self._services[:5]) if self._services else 'nenhum'
+        body = quote(
+            f"## Bug Report\n\n"
+            f"**Descricao:**\n\n<!-- Descreva o bug aqui -->\n\n"
+            f"**Passos para reproduzir:**\n1. \n2. \n3. \n\n"
+            f"**Comportamento esperado:**\n\n\n"
+            f"**Comportamento atual:**\n\n\n"
+            f"---\n"
+            f"**Ambiente:**\n"
+            f"- OS: {platform.system()} {platform.version()}\n"
+            f"- Python: {platform.python_version()}\n"
+            f"- Servicos: {svc_list}\n"
+            f"- Sidebar: {self._sidebar_style}\n"
+            f"- Tema: {self._theme}\n"
+        )
+        url = f'https://github.com/{GITHUB_REPO}/issues/new?title=bug:+&body={body}&labels=bug'
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _suggest_improvement(self):  # pragma: no cover
+        """Open GitHub issue form pre-filled as feature request."""
+        from urllib.parse import quote
+        from PySide6.QtGui import QDesktopServices
+        from .updater import GITHUB_REPO
+        body = quote(
+            f"## Sugestao de Melhoria\n\n"
+            f"**Descricao:**\n\n<!-- Descreva a melhoria aqui -->\n\n"
+            f"**Motivacao:**\n\n<!-- Por que essa melhoria seria util? -->\n\n"
+            f"**Alternativas consideradas:**\n\n\n"
+        )
+        url = f'https://github.com/{GITHUB_REPO}/issues/new?title=feat:+&body={body}&labels=enhancement'
+        QDesktopServices.openUrl(QUrl(url))
 
     def _apply_sidebar_style(self, style: str):  # pragma: no cover
         """Switch sidebar visual style."""

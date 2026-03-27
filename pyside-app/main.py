@@ -132,10 +132,12 @@ class _AnimatedSplash:
         # Inner container with rounded corners
         inner = QWidget(win)
         inner.setFixedSize(W, H)
+        inner.setObjectName('splashInner')
         inner.setStyleSheet(
-            'background: qlineargradient(x1:0,y1:0,x2:0,y2:1,'
+            '#splashInner { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,'
             'stop:0 #12121a, stop:1 #1a1a28);'
-            'border-radius: 16px; border: 1px solid rgba(124,106,247,0.15);'
+            'border-radius: 16px; border: 1px solid rgba(124,106,247,0.15); }'
+            '#splashInner QLabel { border: none; background: transparent; }'
         )
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(0, 48, 0, 40)
