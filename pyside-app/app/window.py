@@ -791,6 +791,9 @@ class _GlassSidebar(QWidget):  # pragma: no cover
         super().__init__(parent)
         self._accent = accent_color
         self.style: str = 'discord'
+        self.opacity: int = 100          # 0-100%
+        self.custom_bg: str = ''         # hex override
+        self.custom_border: str = ''     # hex override
         self.setObjectName('sidebar')
         self.setStyleSheet('QWidget#sidebar { background: transparent; border-right: none; }')
 
@@ -802,6 +805,19 @@ class _GlassSidebar(QWidget):  # pragma: no cover
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
+
+        # Apply global opacity
+        if self.opacity < 100:
+            p.setOpacity(self.opacity / 100.0)
+
+        # Custom background override
+        if self.custom_bg:
+            p.fillRect(0, 0, w, h, QColor(self.custom_bg))
+            border_c = QColor(self.custom_border) if self.custom_border else QColor(50, 50, 65, 160)
+            p.setPen(border_c)
+            p.drawLine(w - 1, 0, w - 1, h)
+            super().paintEvent(event)
+            return
 
         if self.style == 'arc':
             # Flat surface — clean, no gradient
@@ -1310,8 +1326,12 @@ class OrbitWindow(QMainWindow):
 
         # ── SIDEBAR ────────────────────────────────────────────────────────────
         _sidebar_accent = ACCENTS.get(self._accent, ACCENTS['Iris'])
+        _sb_settings = load_settings()
         self._sidebar = _GlassSidebar(_sidebar_accent)
         self._sidebar.style = self._sidebar_style
+        self._sidebar.opacity = _sb_settings.get('sidebar_opacity', 100)
+        self._sidebar.custom_bg = _sb_settings.get('sidebar_custom_bg', '')
+        self._sidebar.custom_border = _sb_settings.get('sidebar_custom_border', '')
         self._glass_sidebar = self._sidebar
         self._sidebar.setMinimumWidth(64)
 
@@ -1493,19 +1513,27 @@ class OrbitWindow(QMainWindow):
         # Feature 2: QSplitter for resizable sidebar
         self._splitter = QSplitter(Qt.Horizontal)
         self._splitter.setHandleWidth(1)
-        self._splitter.addWidget(self._sidebar)
-        self._splitter.addWidget(content)
         self._ai_panel = self._build_ai_sidebar()
-        self._splitter.addWidget(self._ai_panel)
+        _s = load_settings()
+        self._sidebar_position = _s.get('sidebar_position', 'left')
+        if self._sidebar_position == 'right':
+            self._splitter.addWidget(content)
+            self._splitter.addWidget(self._ai_panel)
+            self._splitter.addWidget(self._sidebar)
+        else:
+            self._splitter.addWidget(self._sidebar)
+            self._splitter.addWidget(content)
+            self._splitter.addWidget(self._ai_panel)
         self._splitter.setCollapsible(0, False)
         self._splitter.setCollapsible(1, False)
         self._splitter.setCollapsible(2, True)
-        _s = load_settings()
         _compact_w  = _s.get('sidebar_compact_width', 68)
         _expanded_w = _s.get('sidebar_expanded_width', 220)
-        # Always use compact width when compact mode is active (ignore possibly-stale saved_w)
         _init_w = _compact_w if self._sidebar_compact else _s.get('sidebar_width', _expanded_w)
-        self._splitter.setSizes([_init_w, 1220, 0])
+        if self._sidebar_position == 'right':
+            self._splitter.setSizes([1220, 0, _init_w])
+        else:
+            self._splitter.setSizes([_init_w, 1220, 0])
         self._splitter.splitterMoved.connect(self._on_splitter_moved)
         root.addWidget(self._splitter, 1)
 
@@ -3929,7 +3957,11 @@ class OrbitWindow(QMainWindow):
                 'show_import':       self._show_import_dialog,
                 'set_ad_block':      self._toggle_ad_block,
                 'apply_sidebar_widths': self._apply_sidebar_widths,
-                'apply_sidebar_style':  self._apply_sidebar_style,
+                'apply_sidebar_style':    self._apply_sidebar_style,
+                'apply_sidebar_opacity':  self._apply_sidebar_opacity,
+                'apply_sidebar_custom_bg': self._apply_sidebar_custom_bg,
+                'apply_sidebar_custom_border': self._apply_sidebar_custom_border,
+                'apply_sidebar_position': self._apply_sidebar_position,
                 'apply_tray_settings':  self._apply_tray_settings,
                 'apply_workspace_enabled': self.set_workspaces_enabled,
             },
@@ -3947,6 +3979,35 @@ class OrbitWindow(QMainWindow):
         settings['sidebar_style'] = style
         save_settings(settings)
         self._rebuild_sidebar()
+
+    def _apply_sidebar_opacity(self, value: int):  # pragma: no cover
+        self._glass_sidebar.opacity = value
+        self._glass_sidebar.update()
+        settings = load_settings()
+        settings['sidebar_opacity'] = value
+        save_settings(settings)
+
+    def _apply_sidebar_custom_bg(self, color: str):  # pragma: no cover
+        self._glass_sidebar.custom_bg = color
+        self._glass_sidebar.update()
+        settings = load_settings()
+        settings['sidebar_custom_bg'] = color
+        save_settings(settings)
+
+    def _apply_sidebar_custom_border(self, color: str):  # pragma: no cover
+        self._glass_sidebar.custom_border = color
+        self._glass_sidebar.update()
+        settings = load_settings()
+        settings['sidebar_custom_border'] = color
+        save_settings(settings)
+
+    def _apply_sidebar_position(self, position: str):  # pragma: no cover
+        self._sidebar_position = position
+        settings = load_settings()
+        settings['sidebar_position'] = position
+        save_settings(settings)
+        from .toast import ToastManager
+        ToastManager.show(self, 'Posição alterada. Reinicie o app para aplicar.', 'info', 4000)
 
     def _apply_sidebar_widths(self, compact_w: int, expanded_w: int):  # pragma: no cover
         """Apply new sidebar widths from settings without requiring restart."""

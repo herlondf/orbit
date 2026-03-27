@@ -1295,6 +1295,70 @@ class GeneralSettingsDialog(QDialog):  # pragma: no cover
         lay.addWidget(_separator())
         lay.addWidget(_section_title('COMPORTAMENTO'))
 
+        # Position: left/right
+        self._sidebar_pos_combo = QComboBox()
+        self._sidebar_pos_combo.addItem('Esquerda', 'left')
+        self._sidebar_pos_combo.addItem('Direita', 'right')
+        cur_pos = self._settings.get('sidebar_position', 'left')
+        self._sidebar_pos_combo.setCurrentIndex(0 if cur_pos == 'left' else 1)
+        self._sidebar_pos_combo.currentIndexChanged.connect(self._on_sidebar_pos_changed)
+        form.addRow('Posição:', self._sidebar_pos_combo)
+
+        lay.addLayout(form)
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('APARÊNCIA'))
+
+        # Opacity slider
+        from PySide6.QtWidgets import QSlider
+        opacity_row = QHBoxLayout()
+        opacity_row.addWidget(QLabel('Opacidade:'))
+        self._opacity_slider = QSlider(Qt.Horizontal)
+        self._opacity_slider.setRange(20, 100)
+        self._opacity_slider.setValue(self._settings.get('sidebar_opacity', 100))
+        self._opacity_slider.setTickInterval(10)
+        self._opacity_lbl = QLabel(f'{self._opacity_slider.value()}%')
+        self._opacity_lbl.setFixedWidth(36)
+        self._opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        opacity_row.addWidget(self._opacity_slider, 1)
+        opacity_row.addWidget(self._opacity_lbl)
+        lay.addLayout(opacity_row)
+
+        # Custom background color
+        from PySide6.QtWidgets import QPushButton
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel('Cor de fundo:'))
+        self._bg_color_btn = QPushButton(self._settings.get('sidebar_custom_bg', '') or 'Padrão do estilo')
+        self._bg_color_btn.setCursor(Qt.PointingHandCursor)
+        self._bg_color_btn.setFixedHeight(28)
+        self._bg_color_btn.clicked.connect(self._pick_sidebar_bg)
+        color_row.addWidget(self._bg_color_btn, 1)
+        self._bg_reset_btn = QPushButton('✕')
+        self._bg_reset_btn.setFixedSize(28, 28)
+        self._bg_reset_btn.setCursor(Qt.PointingHandCursor)
+        self._bg_reset_btn.setToolTip('Resetar para padrão')
+        self._bg_reset_btn.clicked.connect(self._reset_sidebar_bg)
+        color_row.addWidget(self._bg_reset_btn)
+        lay.addLayout(color_row)
+
+        # Custom border color
+        border_row = QHBoxLayout()
+        border_row.addWidget(QLabel('Cor da borda:'))
+        self._border_color_btn = QPushButton(self._settings.get('sidebar_custom_border', '') or 'Padrão do estilo')
+        self._border_color_btn.setCursor(Qt.PointingHandCursor)
+        self._border_color_btn.setFixedHeight(28)
+        self._border_color_btn.clicked.connect(self._pick_sidebar_border)
+        border_row.addWidget(self._border_color_btn, 1)
+        self._border_reset_btn = QPushButton('✕')
+        self._border_reset_btn.setFixedSize(28, 28)
+        self._border_reset_btn.setCursor(Qt.PointingHandCursor)
+        self._border_reset_btn.setToolTip('Resetar para padrão')
+        self._border_reset_btn.clicked.connect(self._reset_sidebar_border)
+        border_row.addWidget(self._border_reset_btn)
+        lay.addLayout(border_row)
+
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('COMPORTAMENTO'))
+
         self._starts_compact_chk = QCheckBox('Iniciar com a barra lateral minimizada')
         self._starts_compact_chk.setChecked(self._settings.get('sidebar_compact', True))
         lay.addWidget(self._starts_compact_chk)
@@ -1563,6 +1627,54 @@ class GeneralSettingsDialog(QDialog):  # pragma: no cover
         if callable(cb):
             cb(style)
 
+    def _on_sidebar_pos_changed(self, index):
+        pos = self._sidebar_pos_combo.currentData()
+        cb = self._cbs.get('apply_sidebar_position')
+        if callable(cb):
+            cb(pos)
+
+    def _on_opacity_changed(self, value):
+        self._opacity_lbl.setText(f'{value}%')
+        cb = self._cbs.get('apply_sidebar_opacity')
+        if callable(cb):
+            cb(value)
+
+    def _pick_sidebar_bg(self):
+        from PySide6.QtWidgets import QColorDialog
+        color = QColorDialog.getColor(QColor(self._settings.get('sidebar_custom_bg', '#1c1c23')), self, 'Cor de fundo da sidebar')
+        if color.isValid():
+            hex_c = color.name()
+            self._bg_color_btn.setText(hex_c)
+            self._bg_color_btn.setStyleSheet(f'background:{hex_c}; color:#fff; border-radius:4px;')
+            cb = self._cbs.get('apply_sidebar_custom_bg')
+            if callable(cb):
+                cb(hex_c)
+
+    def _reset_sidebar_bg(self):
+        self._bg_color_btn.setText('Padrão do estilo')
+        self._bg_color_btn.setStyleSheet('')
+        cb = self._cbs.get('apply_sidebar_custom_bg')
+        if callable(cb):
+            cb('')
+
+    def _pick_sidebar_border(self):
+        from PySide6.QtWidgets import QColorDialog
+        color = QColorDialog.getColor(QColor(self._settings.get('sidebar_custom_border', '#323241')), self, 'Cor da borda da sidebar')
+        if color.isValid():
+            hex_c = color.name()
+            self._border_color_btn.setText(hex_c)
+            self._border_color_btn.setStyleSheet(f'background:{hex_c}; color:#fff; border-radius:4px;')
+            cb = self._cbs.get('apply_sidebar_custom_border')
+            if callable(cb):
+                cb(hex_c)
+
+    def _reset_sidebar_border(self):
+        self._border_color_btn.setText('Padrão do estilo')
+        self._border_color_btn.setStyleSheet('')
+        cb = self._cbs.get('apply_sidebar_custom_border')
+        if callable(cb):
+            cb('')
+
     # ── save & close ──────────────────────────────────────────────────────────
 
     def _save_and_close(self):
@@ -1571,6 +1683,8 @@ class GeneralSettingsDialog(QDialog):  # pragma: no cover
         self._settings['sidebar_expanded_width'] = self._expanded_w_spin.value()
         self._settings['sidebar_compact'] = self._starts_compact_chk.isChecked()
         self._settings['sidebar_style'] = self._sidebar_style_combo.currentData()
+        self._settings['sidebar_position'] = self._sidebar_pos_combo.currentData()
+        self._settings['sidebar_opacity'] = self._opacity_slider.value()
 
         # Behavior / tray
         min_tray = self._minimize_tray_chk.isChecked()

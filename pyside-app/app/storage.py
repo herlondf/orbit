@@ -185,6 +185,10 @@ SETTINGS_DEFAULTS: dict = {
     'preload_on_start': False,         # pre-warm all services on startup
     'notification_style': 'orbit',    # 'orbit' | 'system' | 'both'
     'sidebar_style': 'discord',       # 'discord' | 'arc' | 'dock' | 'notion'
+    'sidebar_position': 'left',       # 'left' | 'right'
+    'sidebar_opacity': 100,           # 0-100%
+    'sidebar_custom_bg': '',          # hex color override (empty = use style default)
+    'sidebar_custom_border': '',      # hex color override (empty = use style default)
 }
 
 
