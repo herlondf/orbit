@@ -5,6 +5,7 @@ import os
 from typing import List
 
 from .models import Account, Service, ServiceGroup, Workspace
+from .encryption import dpapi_protect, dpapi_unprotect
 
 _APPDATA = os.environ.get('APPDATA', os.path.expanduser('~'))
 STORAGE_DIR = os.path.join(_APPDATA, 'Orbit')
@@ -16,6 +17,48 @@ _WORKSPACES_FILE = os.path.join(STORAGE_DIR, 'workspaces.json')
 def _ensure_dirs() -> None:
     os.makedirs(STORAGE_DIR, exist_ok=True)
     os.makedirs(PROFILES_DIR, exist_ok=True)
+
+
+import base64
+import logging
+from urllib.parse import urlparse, urlunparse
+
+_log = logging.getLogger(__name__)
+
+
+def _protect_proxy(proxy: str) -> str:
+    """Encrypt the password portion of a proxy URL with DPAPI before saving."""
+    if not proxy:
+        return proxy
+    try:
+        p = urlparse(proxy)
+        if p.password:
+            enc = base64.b64encode(dpapi_protect(p.password.encode('utf-8'))).decode('ascii')
+            netloc = f"{p.username}:{{dpapi}}{enc}@{p.hostname}"
+            if p.port:
+                netloc += f":{p.port}"
+            return urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
+    except Exception:
+        _log.debug("DPAPI protect failed for proxy, storing as-is")
+    return proxy
+
+
+def _unprotect_proxy(proxy: str) -> str:
+    """Decrypt the DPAPI-protected password portion of a proxy URL on load."""
+    if not proxy or '{dpapi}' not in proxy:
+        return proxy
+    try:
+        p = urlparse(proxy)
+        if p.password and p.password.startswith('{dpapi}'):
+            enc = p.password[7:]  # strip {dpapi} prefix
+            password = dpapi_unprotect(base64.b64decode(enc)).decode('utf-8')
+            netloc = f"{p.username}:{password}@{p.hostname}"
+            if p.port:
+                netloc += f":{p.port}"
+            return urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
+    except Exception:
+        _log.debug("DPAPI unprotect failed for proxy, returning as-is")
+    return proxy
 
 
 def _service_to_dict(svc: Service) -> dict:
@@ -33,7 +76,7 @@ def _service_to_dict(svc: Service) -> dict:
         'zoom': svc.zoom,
         'notification_sound': svc.notification_sound,
         'incognito': svc.incognito,
-        'proxy': svc.proxy,
+        'proxy': _protect_proxy(svc.proxy),
         'enabled': svc.enabled,
         'tags': svc.tags,
         'spellcheck': svc.spellcheck,
@@ -79,7 +122,7 @@ def _service_from_dict(s: dict) -> Service:
         zoom=s.get('zoom', 1.0),
         notification_sound=s.get('notification_sound', ''),
         incognito=s.get('incognito', False),
-        proxy=s.get('proxy', ''),
+        proxy=_unprotect_proxy(s.get('proxy', '')),
         enabled=s.get('enabled', True),
         tags=s.get('tags', []),
         spellcheck=s.get('spellcheck', True),
@@ -124,6 +167,24 @@ def load_services() -> List[Service]:
 
 
 _SETTINGS_FILE = os.path.join(STORAGE_DIR, 'settings.json')
+
+# Default values for all known settings keys.
+SETTINGS_DEFAULTS: dict = {
+    'theme': 'dark',
+    'accent': 'Iris',
+    'sidebar_compact': True,           # sidebar starts minimized by default
+    'sidebar_compact_width': 68,       # px — width when minimized
+    'sidebar_expanded_width': 220,     # px — width when expanded
+    'sidebar_width': 68,               # last saved splitter position
+    'ad_block': True,
+    'minimize_to_tray': False,         # close button hides to tray
+    'show_tray': True,                 # show system tray icon
+    'ai_sidebar_open': False,
+    'encrypt_enabled': False,
+    'workspaces_enabled': True,        # show workspace switcher in sidebar
+    'preload_on_start': False,         # pre-warm all services on startup
+    'notification_style': 'orbit',    # 'orbit' | 'system' | 'both'
+}
 
 
 def load_settings() -> dict:

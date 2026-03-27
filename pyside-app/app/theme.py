@@ -132,8 +132,8 @@ QMainWindow, QDialog {{
 #header {{
     background-color: {t.bg_surface};
     border-bottom: 1px solid {t.border};
-    min-height: 40px;
-    max-height: 40px;
+    min-height: 44px;
+    max-height: 44px;
 }}
 
 /* ── Stack / Content ── */
@@ -205,6 +205,29 @@ QPushButton#iconBtn, QPushButton#headerBtn {{
 }}
 QPushButton#iconBtn:hover, QPushButton#headerBtn:hover {{
     background-color: {t.bg_hover};
+}}
+
+/* ── Header action buttons ── */
+QPushButton#hBtn {{
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 0;
+}}
+QPushButton#hBtn:hover {{
+    background-color: {t.bg_hover};
+}}
+QPushButton#hBtn:checked {{
+    background-color: {t.accent_dim};
+}}
+QPushButton#hDanger {{
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 0;
+}}
+QPushButton#hDanger:hover {{
+    background-color: rgba(243,139,168,20);
 }}
 
 /* ── Inputs ── */

@@ -462,7 +462,7 @@ class ServiceView(QWebEngineView):  # pragma: no cover
             js_script.setName('orbit-custom-js')
             js_script.setSourceCode(custom_js)
             js_script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
-            js_script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+            js_script.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
             js_script.setRunsOnSubFrames(False)
             self._profile.scripts().insert(js_script)
 

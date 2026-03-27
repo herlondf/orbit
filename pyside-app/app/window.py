@@ -160,7 +160,6 @@ class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
         self._hover_timer = QTimer(self)
         self._hover_timer.setInterval(16)  # ~60 fps
         self._hover_timer.timeout.connect(self._tick_hover)
-        self._hover_timer.start()
 
     def _get_bar_width(self) -> float:
         return self._bar_width
@@ -182,6 +181,8 @@ class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
     def set_hovered_row(self, row: int) -> None:
         """Called by the parent list when mouse moves over a row."""
         self._hover_row = row
+        if row >= 0 and not self._hover_timer.isActive():
+            self._hover_timer.start()
 
     def _tick_hover(self) -> None:
         """Oscillate icon Y with a sine wave while hovered; decay smoothly on leave."""
@@ -217,6 +218,8 @@ class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
 
         if (changed or self._hover_offsets) and lw:
             lw.viewport().update()
+        elif not self._hover_offsets and self._hover_row < 0:
+            self._hover_timer.stop()
 
     def sizeHint(self, option, index) -> QSize:
         if index.data(_ROLE_SEP) is not None:
@@ -754,6 +757,7 @@ class OrbitWindow(QMainWindow):
         self._build_ui()
         _tick()
         self._setup_tray()
+        self._setup_global_hotkey()
         self._setup_shortcuts()
         _tick()
         self._rich_tooltip = _RichTooltip()
@@ -900,6 +904,22 @@ class OrbitWindow(QMainWindow):
         if event.type() == QEvent.Leave and hasattr(self, '_svc_list'):
             if obj is self._svc_list.viewport() and hasattr(self, '_rich_tooltip'):
                 self._rich_tooltip.hide()
+        # ── Rich tooltip on sidebar hover ─────────────────────────
+        if hasattr(self, '_svc_list') and obj is self._svc_list.viewport():
+            if event.type() == QEvent.MouseMove and not getattr(self, '_drag_active', False):
+                pos = event.position().toPoint()
+                item = self._svc_list.itemAt(pos)
+                if item and self._sidebar_compact:
+                    svc = item.data(_ROLE_SVC)
+                    if svc:
+                        rect = self._svc_list.visualItemRect(item)
+                        global_rect = QRect(
+                            self._svc_list.viewport().mapToGlobal(rect.topLeft()),
+                            rect.size()
+                        )
+                        self._rich_tooltip.show_for(svc, global_rect)
+                else:
+                    self._rich_tooltip.hide()
         # ── Drag-to-reorder service list ──────────────────────────
         if hasattr(self, '_svc_list') and obj is self._svc_list.viewport():
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
@@ -915,15 +935,25 @@ class OrbitWindow(QMainWindow):
                 target = self._svc_list.itemAt(pos)
                 if target:
                     target_row = self._svc_list.row(target)
+                    # Show drop indicator line
+                    rect = self._svc_list.visualItemRect(target)
+                    mid = rect.center().y()
+                    y = rect.top() if pos.y() < mid else rect.bottom()
+                    self._drag_indicator.setGeometry(rect.x() + 4, y - 1, rect.width() - 8, 2)
+                    self._drag_indicator.show()
+                    self._drag_indicator.raise_()
                     if target_row != self._drag_src_row:
                         # Move in data model
                         svc = self._services.pop(self._drag_src_row)
                         self._services.insert(target_row, svc)
-                        # Rebuild and track new position
-                        self._rebuild_sidebar()
+                        # Rebuild synchronously (drag needs immediate visual feedback)
+                        self._do_rebuild_sidebar()
                         self._svc_list.setCurrentRow(target_row)
                         self._drag_src_row = target_row
+                else:
+                    self._drag_indicator.hide()
             elif event.type() == QEvent.MouseButtonRelease and self._drag_src_row >= 0:
+                self._drag_indicator.hide()
                 if self._drag_active:
                     self._save()
                     self._svc_list.setCursor(Qt.ArrowCursor)
@@ -967,6 +997,11 @@ class OrbitWindow(QMainWindow):
         lock_sc = QShortcut(QKeySequence('Ctrl+L'), self)
         lock_sc.activated.connect(self._lock_now)
         self._sc_objects['lock'] = lock_sc
+
+        # Theme toggle shortcut (Ctrl+Shift+T)
+        theme_sc = QShortcut(QKeySequence('Ctrl+Shift+T'), self)
+        theme_sc.activated.connect(self._toggle_theme)
+        self._sc_objects['theme_toggle'] = theme_sc
 
         # Shortcuts cheatsheet
         shortcuts_sc = QShortcut(QKeySequence('Ctrl+?'), self)
@@ -1137,6 +1172,10 @@ class OrbitWindow(QMainWindow):
         self._svc_list.setDragDropMode(QListWidget.NoDragDrop)
         self._drag_src_row = -1
         self._drag_active = False
+        self._drag_indicator = QFrame(self._svc_list.viewport())
+        self._drag_indicator.setFixedHeight(2)
+        self._drag_indicator.setStyleSheet('background-color: #7c6af7; border-radius: 1px;')
+        self._drag_indicator.hide()
         self._svc_list.viewport().installEventFilter(self)
 
         # Signals
@@ -1177,6 +1216,11 @@ class OrbitWindow(QMainWindow):
 
         settings_btn = _mk_bar_btn('cog-6-tooth', 'Configurações  (Ctrl+,)', self._show_settings)
         add_btn = _mk_bar_btn('plus-circle', 'Adicionar serviço', self._add_service)
+        self._theme_btn = _mk_bar_btn(
+            'moon' if self._theme == 'dark' else 'sun',
+            'Alternar tema (Ctrl+Shift+T)',
+            self._toggle_theme,
+        )
         self._compact_btn = _mk_bar_btn(
             'chevron-double-right' if self._sidebar_compact else 'chevron-double-left',
             'Recolher sidebar',
@@ -1184,6 +1228,7 @@ class OrbitWindow(QMainWindow):
         )
         bottom_layout.addWidget(settings_btn)
         bottom_layout.addWidget(add_btn)
+        bottom_layout.addWidget(self._theme_btn)
         bottom_layout.addWidget(self._compact_btn)
         sb_layout.addWidget(self._bottom_bar)
 
@@ -1562,6 +1607,15 @@ class OrbitWindow(QMainWindow):
         dlg.exec()
 
     def _rebuild_sidebar(self):  # pragma: no cover
+        """Debounced sidebar rebuild — coalesces rapid calls into one."""
+        if not hasattr(self, '_rebuild_timer'):
+            self._rebuild_timer = QTimer(self)
+            self._rebuild_timer.setSingleShot(True)
+            self._rebuild_timer.setInterval(50)
+            self._rebuild_timer.timeout.connect(self._do_rebuild_sidebar)
+        self._rebuild_timer.start()
+
+    def _do_rebuild_sidebar(self):  # pragma: no cover
         # Clear all items
         self._svc_list.clear()
         self._svc_items.clear()
@@ -1776,6 +1830,12 @@ class OrbitWindow(QMainWindow):
             self._ws_btn.setVisible(enabled)
         if hasattr(self, '_sep_top'):
             self._sep_top.setVisible(enabled)
+
+    def _toggle_theme(self):  # pragma: no cover
+        new_theme = 'light' if self._theme == 'dark' else 'dark'
+        self._apply_theme(new_theme)
+        icon_name = 'moon' if new_theme == 'dark' else 'sun'
+        self._theme_btn.setIcon(svg_icon(icon_name, 18, '#6c7086'))
 
     def _apply_theme(self, theme: str):  # pragma: no cover
         self._theme = theme
@@ -1994,7 +2054,7 @@ class OrbitWindow(QMainWindow):
         dnd_btn.setIconSize(QSize(18, 18))
         dnd_btn.setObjectName('hBtn')
         dnd_btn.setFixedSize(32, 32)
-        dnd_btn.setToolTip('Não perturbe')
+        dnd_btn.setToolTip('Não perturbe (Ctrl+D)')
         dnd_btn.setCursor(Qt.PointingHandCursor)
         dnd_btn.clicked.connect(self._show_dnd_menu)
         self._header_layout.addWidget(dnd_btn)
@@ -2123,8 +2183,21 @@ class OrbitWindow(QMainWindow):
             view.load_status_changed.connect(
                 lambda s, sid=self._active_service.id: self._on_load_status(sid, s)
             )
+            # Wrap view in a stacked widget with skeleton overlay
+            from .skeleton import SkeletonWidget
+            wrapper = QStackedWidget()
+            wrapper.setObjectName('viewWrapper')
+            skeleton = SkeletonWidget()
+            wrapper.addWidget(skeleton)  # index 0 = skeleton
+            wrapper.addWidget(view)      # index 1 = webview
+            wrapper.setCurrentIndex(0)   # show skeleton initially
+            view._wrapper = wrapper
+            view._skeleton = skeleton
+            view.load_status_changed.connect(
+                lambda s, w=wrapper: w.setCurrentIndex(1) if s == 'ready' else None
+            )
             self._views[key] = view
-            self._stack.addWidget(view)
+            self._stack.addWidget(wrapper)
             self._status_badge.set_status('connecting')
 
         self._wake_service(self._active_service, account)
@@ -2132,7 +2205,8 @@ class OrbitWindow(QMainWindow):
         for v in self._views.values():
             v.active = False
         self._views[key].active = True
-        self._fade_switch(self._views[key])
+        target = getattr(self._views[key], '_wrapper', self._views[key])
+        self._fade_switch(target)
 
         # Update status badge for the now-active view
         view = self._views[key]
@@ -3152,6 +3226,33 @@ class OrbitWindow(QMainWindow):
         if load_settings().get('show_tray', True):
             self._tray.show()
 
+    def _setup_global_hotkey(self):  # pragma: no cover
+        """Register Ctrl+Shift+O as a global hotkey to bring Orbit to front (Windows only)."""
+        if sys.platform != 'win32':
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            from threading import Thread
+
+            MOD_CTRL_SHIFT = 0x0002 | 0x0004  # MOD_CONTROL | MOD_SHIFT
+            VK_O = 0x4F
+            HOTKEY_ID = 1
+
+            def _hotkey_listener():
+                user32 = ctypes.windll.user32
+                if not user32.RegisterHotKey(None, HOTKEY_ID, MOD_CTRL_SHIFT, VK_O):
+                    return
+                msg = wintypes.MSG()
+                while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+                    if msg.message == 0x0312:  # WM_HOTKEY
+                        QTimer.singleShot(0, self._show_and_raise)
+
+            t = Thread(target=_hotkey_listener, daemon=True)
+            t.start()
+        except Exception:
+            pass
+
     def _show_and_raise(self):  # pragma: no cover
         self.show()
         self.raise_()
@@ -3991,6 +4092,24 @@ class OrbitWindow(QMainWindow):
         settings['geometry'] = {'x': g.x(), 'y': g.y(), 'w': g.width(), 'h': g.height()}
         save_settings(settings)
 
+        # Stop timers to prevent leaks
+        if hasattr(self, '_svc_delegate') and self._svc_delegate._hover_timer.isActive():
+            self._svc_delegate._hover_timer.stop()
+        if hasattr(self, '_rebuild_timer'):
+            self._rebuild_timer.stop()
+        if hasattr(self, '_schedule_timer'):
+            self._schedule_timer.stop()
+        for t in getattr(self, '_hibernate_timers', {}).values():
+            t.stop()
+        # Disconnect view signals
+        for view in getattr(self, '_views', {}).values():
+            try:
+                view.badge_changed.disconnect()
+                view.load_status_changed.disconnect()
+                view.notification_received.disconnect()
+            except RuntimeError:
+                pass
+
         if settings.get('minimize_to_tray', False):
             event.ignore()
             self.hide()
@@ -4187,6 +4306,8 @@ class OrbitWindow(QMainWindow):
     def _on_svc_item_entered(self, item: QListWidgetItem):  # pragma: no cover
         pass  # Badge already shows the count — no extra tooltip needed
 
+    _ALLOWED_URL_COMMANDS = {'open', 'service', 'workspace'}
+
     def handle_url_scheme(self, url: str):
         """Handle an orbit:// URL passed via command-line or protocol activation.
 
@@ -4195,6 +4316,11 @@ class OrbitWindow(QMainWindow):
           orbit://service/<service_id>  — switch to a service by ID
           orbit://workspace/<name>      — switch to a workspace by name
         """
+        if not isinstance(url, str) or not url.startswith('orbit://'):
+            return
+        # Sanitize: limit length, strip dangerous chars
+        url = url[:256]
+
         self.show()
         self.raise_()
         self.activateWindow()
@@ -4205,14 +4331,16 @@ class OrbitWindow(QMainWindow):
             if not parts:
                 return
             command = parts[0].lower()
+            if command not in self._ALLOWED_URL_COMMANDS:
+                return
             if command == 'service' and len(parts) >= 2:
-                service_id = parts[1]
+                service_id = parts[1][:128]  # limit param length
                 for svc in self._services:
-                    if svc.id == service_id or svc.name.lower() == service_id.lower():
+                    if svc.id == service_id:
                         self._select_service(svc)
                         break
             elif command == 'workspace' and len(parts) >= 2:
-                ws_name = parts[1].lower()
+                ws_name = parts[1][:128].lower()
                 for ws in self._workspaces:
                     if ws.name.lower() == ws_name:
                         self._switch_workspace(ws)

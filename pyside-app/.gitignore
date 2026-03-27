@@ -1,0 +1,31 @@
+# Orbit PySide App
+profiles/
+workspace.json
+workspaces.json
+settings.json
+*.cer
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Build artifacts
+dist/
+build/
+*.spec
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Debug images
+debug_*.png
+
+# OS
+Thumbs.db
+.DS_Store
