@@ -1280,14 +1280,7 @@ class GeneralSettingsDialog(QDialog):  # pragma: no cover
         self._expanded_w_spin.setToolTip('Largura da sidebar no modo expandido')
         form.addRow('Largura expandida:', self._expanded_w_spin)
 
-        lay.addLayout(form)
-        lay.addWidget(_separator())
-        lay.addWidget(_section_title('COMPORTAMENTO'))
-
         # Sidebar style picker
-        from PySide6.QtWidgets import QComboBox
-        style_row = QHBoxLayout()
-        style_row.addWidget(QLabel('Estilo da sidebar:'))
         self._sidebar_style_combo = QComboBox()
         _style_map = {'discord': 'Discord', 'arc': 'Arc Browser', 'dock': 'Dock (macOS)', 'notion': 'Notion'}
         for key, label in _style_map.items():
@@ -1296,8 +1289,11 @@ class GeneralSettingsDialog(QDialog):  # pragma: no cover
         idx = list(_style_map.keys()).index(current) if current in _style_map else 0
         self._sidebar_style_combo.setCurrentIndex(idx)
         self._sidebar_style_combo.currentIndexChanged.connect(self._on_sidebar_style_changed)
-        style_row.addWidget(self._sidebar_style_combo)
-        lay.addLayout(style_row)
+        form.addRow('Estilo:', self._sidebar_style_combo)
+
+        lay.addLayout(form)
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('COMPORTAMENTO'))
 
         self._starts_compact_chk = QCheckBox('Iniciar com a barra lateral minimizada')
         self._starts_compact_chk.setChecked(self._settings.get('sidebar_compact', True))
