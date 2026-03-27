@@ -184,6 +184,7 @@ SETTINGS_DEFAULTS: dict = {
     'workspaces_enabled': True,        # show workspace switcher in sidebar
     'preload_on_start': False,         # pre-warm all services on startup
     'notification_style': 'orbit',    # 'orbit' | 'system' | 'both'
+    'sidebar_style': 'discord',       # 'discord' | 'arc' | 'dock' | 'notion'
 }
 
 

@@ -148,6 +148,7 @@ class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
         super().__init__(parent)
         self.compact: bool = True
         self.accent: str = '#cba6f7'
+        self.style: str = 'discord'  # 'discord' | 'arc' | 'dock' | 'notion'
         # Active bar animation: animates width 0→3 when item selected
         self._bar_width: float = 3.0
         self._bar_anim = QPropertyAnimation(self, b'bar_width')
@@ -221,27 +222,31 @@ class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
         elif not self._hover_offsets and self._hover_row < 0:
             self._hover_timer.stop()
 
+    # ── Size hints per style ──────────────────────────────────────────────────
+    _SIZES = {
+        'discord': {'compact': (56, 56), 'expanded': (200, 48)},
+        'arc':     {'compact': (72, 64), 'expanded': (220, 48)},
+        'dock':    {'compact': (64, 70), 'expanded': (220, 54)},
+        'notion':  {'compact': (68, 48), 'expanded': (240, 36)},
+    }
+
     def sizeHint(self, option, index) -> QSize:
         if index.data(_ROLE_SEP) is not None:
             return QSize(option.rect.width() if option.rect.isValid() else 220, 26)
-        if self.compact:
-            return QSize(68, 60)
-        return QSize(220, 54)
+        sizes = self._SIZES.get(self.style, self._SIZES['discord'])
+        w, h = sizes['compact'] if self.compact else sizes['expanded']
+        return QSize(w, h)
 
+    # ── Paint dispatcher ──────────────────────────────────────────────────────
     def paint(self, painter, option, index):  # noqa: C901
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
 
         sep_text = index.data(_ROLE_SEP)
         if sep_text is not None:
-            # Group header row
             painter.setPen(QPen(QColor('#6c7086')))
             painter.setFont(QFont('Inter', 8, QFont.Bold))
-            painter.drawText(
-                option.rect.adjusted(10, 0, -4, 0),
-                Qt.AlignVCenter | Qt.AlignLeft,
-                str(sep_text).upper(),
-            )
+            painter.drawText(option.rect.adjusted(10, 0, -4, 0), Qt.AlignVCenter | Qt.AlignLeft, str(sep_text).upper())
             painter.restore()
             return
 
@@ -252,100 +257,288 @@ class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
 
         from PySide6.QtWidgets import QStyle
         r = option.rect
-        w, h, x0, y0 = r.width(), r.height(), r.x(), r.y()
-        is_selected = bool(option.state & QStyle.State_Selected)
-        is_hovered  = bool(option.state & QStyle.State_MouseOver)
-        is_disabled = not getattr(svc, 'enabled', True)
-
-        if is_disabled:
+        ctx = {
+            'w': r.width(), 'h': r.height(), 'x0': r.x(), 'y0': r.y(),
+            'is_selected': bool(option.state & QStyle.State_Selected),
+            'is_hovered': bool(option.state & QStyle.State_MouseOver),
+            'is_disabled': not getattr(svc, 'enabled', True),
+            'badge': index.data(_ROLE_BADGE) or 0,
+            'status': index.data(_ROLE_STATUS) or '',
+            'pixmap': index.data(_ROLE_PIXMAP),
+            'row': index.row(),
+        }
+        if ctx['is_disabled']:
             painter.setOpacity(0.4)
 
-        # Selection / hover background
-        bar_w = int(self._bar_width) if is_selected else 0
-        if is_selected:
-            painter.setBrush(QBrush(QColor(203, 166, 247, 30)))
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(x0 + 4, y0 + 2, w - 8, h - 4, 8, 8)
-            # Animated accent bar
-            if bar_w > 0:
-                painter.setBrush(QBrush(QColor(self.accent)))
-                painter.drawRoundedRect(x0, y0 + 8, bar_w, h - 16, 2, 2)
-        elif is_hovered:
-            painter.setBrush(QBrush(QColor(255, 255, 255, 12)))
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(x0 + 4, y0 + 2, w - 8, h - 4, 8, 8)
+        style_fn = {
+            'discord': self._paint_discord,
+            'arc': self._paint_arc,
+            'dock': self._paint_dock,
+            'notion': self._paint_notion,
+        }.get(self.style, self._paint_discord)
+        style_fn(painter, svc, ctx)
+        painter.restore()
 
-        # Icon position (with hover float offset)
-        icon_size = 40
-        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 12
-        hover_off = int(self._hover_offsets.get(index.row(), 0.0))
-        iy = y0 + (h - icon_size) // 2 + hover_off
-
-        # Colored icon background
+    # ── Shared helpers ────────────────────────────────────────────────────────
+    def _draw_icon(self, painter, svc, pixmap, ix, iy, icon_size, radius, content_size=26):
         painter.setBrush(QBrush(QColor(svc.color)))
         painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(ix, iy, icon_size, icon_size, 9, 9)
-
-        # Icon content: brand pixmap or 2-letter text
-        pixmap = index.data(_ROLE_PIXMAP)
+        painter.drawRoundedRect(ix, iy, icon_size, icon_size, radius, radius)
         if pixmap and not pixmap.isNull():
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            scaled = pixmap.scaled(26, 26, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            painter.drawPixmap(
-                ix + (icon_size - scaled.width()) // 2,
-                iy + (icon_size - scaled.height()) // 2,
-                scaled,
-            )
+            s = pixmap.scaled(content_size, content_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            painter.drawPixmap(ix + (icon_size - s.width()) // 2, iy + (icon_size - s.height()) // 2, s)
         else:
             painter.setPen(QPen(QColor(255, 255, 255, 230)))
-            painter.setFont(QFont('Segoe UI', 11, QFont.Bold))
+            fs = max(8, content_size // 2)
+            painter.setFont(QFont('Segoe UI', fs, QFont.Bold))
             painter.drawText(ix, iy, icon_size, icon_size, Qt.AlignCenter, svc.icon)
 
-        # Service name — expanded mode only
-        if not self.compact:
-            text_x = ix + icon_size + 10
-            avail_w = x0 + w - text_x - 12
-            painter.setPen(QPen(QColor('#cdd6f4')))
-            font = QFont('Inter', 10, QFont.Medium)
-            font.setLetterSpacing(QFont.AbsoluteSpacing, 0.2)
-            painter.setFont(font)
-            fm = painter.fontMetrics()
-            elided = fm.elidedText(svc.name, Qt.ElideRight, avail_w)
-            painter.drawText(text_x, y0, avail_w, h, Qt.AlignVCenter | Qt.AlignLeft, elided)
+    def _draw_circular_icon(self, painter, svc, pixmap, ix, iy, icon_size, content_size=28):
+        from PySide6.QtGui import QPainterPath
+        path = QPainterPath()
+        path.addEllipse(float(ix), float(iy), float(icon_size), float(icon_size))
+        painter.setClipPath(path)
+        painter.setBrush(QBrush(QColor(svc.color)))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(ix, iy, icon_size, icon_size)
+        if pixmap and not pixmap.isNull():
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            s = pixmap.scaled(content_size, content_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            painter.drawPixmap(ix + (icon_size - s.width()) // 2, iy + (icon_size - s.height()) // 2, s)
+        else:
+            painter.setPen(QPen(QColor(255, 255, 255, 230)))
+            fs = max(8, content_size // 2)
+            painter.setFont(QFont('Segoe UI', fs, QFont.Bold))
+            painter.drawText(ix, iy, icon_size, icon_size, Qt.AlignCenter, svc.icon)
+        painter.setClipping(False)
 
-        # Unread badge
-        badge = index.data(_ROLE_BADGE) or 0
-        if badge > 0:
-            badge_text = str(badge) if badge <= 99 else '99+'
-            badge_w = max(18, len(badge_text) * 7 + 6)
-            badge_h = 16
-            bx = ix + icon_size - badge_w // 2
-            by = iy - 6
+    def _draw_badge(self, painter, badge, bx, by, style='pill'):
+        if badge <= 0:
+            return
+        if style == 'dot':
             painter.setBrush(QBrush(QColor('#f38ba8')))
             painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(bx, by, badge_w, badge_h, 8, 8)
+            painter.drawEllipse(bx, by, 10, 10)
+        else:
+            badge_text = str(badge) if badge <= 99 else '99+'
+            badge_w = max(18, len(badge_text) * 7 + 6)
+            painter.setBrush(QBrush(QColor('#f38ba8')))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bx, by, badge_w, 16, 8, 8)
             painter.setPen(QPen(QColor('#1e1e2e')))
             painter.setFont(QFont('Segoe UI', 8, QFont.Bold))
-            painter.drawText(bx, by, badge_w, badge_h, Qt.AlignCenter, badge_text)
+            painter.drawText(bx, by, badge_w, 16, Qt.AlignCenter, badge_text)
 
-        # Status dot (bottom-right of icon)
-        dot_color = _STATUS_COLORS.get(index.data(_ROLE_STATUS) or '')
+    def _draw_status_dot(self, painter, status, dx, dy):
+        dot_color = _STATUS_COLORS.get(status)
         if dot_color:
-            dot_x = ix + icon_size - 8
-            dot_y = iy + icon_size - 8
             painter.setBrush(QBrush(QColor('#ffffff')))
             painter.setPen(Qt.NoPen)
-            painter.drawEllipse(dot_x - 1, dot_y - 1, 10, 10)
+            painter.drawEllipse(dx - 1, dy - 1, 10, 10)
             painter.setBrush(QBrush(QColor(dot_color)))
-            painter.drawEllipse(dot_x, dot_y, 8, 8)
+            painter.drawEllipse(dx, dy, 8, 8)
 
-        # Incognito badge (top-left corner)
+    def _draw_incognito(self, painter, svc, ix, iy):
         if getattr(svc, 'incognito', False):
             painter.setPen(QPen(QColor('#cdd6f4')))
             painter.setFont(QFont('Segoe UI Emoji', 9))
             painter.drawText(ix - 2, iy - 2, 14, 14, Qt.AlignCenter, '🕵')
 
-        painter.restore()
+    def _draw_name(self, painter, name, tx, ty, tw, th, color='#cdd6f4', size=10):
+        painter.setPen(QPen(QColor(color)))
+        font = QFont('Inter', size, QFont.Medium)
+        font.setLetterSpacing(QFont.AbsoluteSpacing, 0.2)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        elided = fm.elidedText(name, Qt.ElideRight, tw)
+        painter.drawText(tx, ty, tw, th, Qt.AlignVCenter | Qt.AlignLeft, elided)
+
+    # ── DISCORD STYLE ─────────────────────────────────────────────────────────
+    def _paint_discord(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+        icon_size = 44
+        hover_off = int(self._hover_offsets.get(c['row'], 0.0))
+
+        # Selection: pill accent on left edge
+        if c['is_selected']:
+            pill_h = int(h * 0.6)
+            pill_y = y0 + (h - pill_h) // 2
+            painter.setBrush(QBrush(QColor(self.accent)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0, pill_y, 4, pill_h, 2, 2)
+            # Subtle bg glow
+            painter.setBrush(QBrush(QColor(203, 166, 247, 20)))
+            painter.drawRoundedRect(x0 + 6, y0 + 2, w - 10, h - 4, 12, 12)
+        elif c['is_hovered']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 10)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 6, y0 + 2, w - 10, h - 4, 12, 12)
+
+        # Circular icon
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 10
+        iy = y0 + (h - icon_size) // 2 + hover_off
+        self._draw_circular_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 28)
+
+        # Name (expanded)
+        if not self.compact:
+            self._draw_name(painter, svc.name, ix + icon_size + 10, y0, w - ix - icon_size - 30, h)
+
+        # Badge: dot in compact, pill in expanded
+        if c['badge'] > 0:
+            if self.compact:
+                self._draw_badge(painter, c['badge'], ix + icon_size - 10, iy - 2, 'dot')
+            else:
+                bx = x0 + w - 38
+                self._draw_badge(painter, c['badge'], bx, y0 + (h - 16) // 2)
+
+        self._draw_status_dot(painter, c['status'], ix + icon_size - 8, iy + icon_size - 8)
+        self._draw_incognito(painter, svc, ix, iy)
+
+    # ── ARC STYLE ─────────────────────────────────────────────────────────────
+    def _paint_arc(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+        icon_size = 36
+        hover_off = int(self._hover_offsets.get(c['row'], 0.0))
+        margin = 6
+
+        # Selection: full-width pill with accent tint
+        if c['is_selected']:
+            ac = QColor(self.accent)
+            ac.setAlpha(25)
+            painter.setBrush(QBrush(ac))
+            painter.setPen(QPen(QColor(self.accent + '30'), 1))
+            painter.drawRoundedRect(x0 + margin, y0 + 3, w - margin * 2, h - 6, 10, 10)
+        elif c['is_hovered']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 8)))
+            painter.setPen(QPen(QColor(255, 255, 255, 15), 1))
+            painter.drawRoundedRect(x0 + margin, y0 + 3, w - margin * 2, h - 6, 10, 10)
+
+        # Rounded square icon
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + margin + 8
+        iy = y0 + (h - icon_size) // 2 + hover_off
+        self._draw_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 12, 22)
+
+        # Name (expanded)
+        if not self.compact:
+            self._draw_name(painter, svc.name, ix + icon_size + 10, y0, w - ix - icon_size - 30, h, size=11)
+
+        # Badge: accent pill
+        if c['badge'] > 0:
+            if self.compact:
+                self._draw_badge(painter, c['badge'], ix + icon_size - 10, iy - 4)
+            else:
+                badge_text = str(c['badge']) if c['badge'] <= 99 else '99+'
+                badge_w = max(20, len(badge_text) * 7 + 8)
+                bx = x0 + w - badge_w - margin - 6
+                by = y0 + (h - 18) // 2
+                ac = QColor(self.accent)
+                ac.setAlpha(180)
+                painter.setBrush(QBrush(ac))
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(bx, by, badge_w, 18, 9, 9)
+                painter.setPen(QPen(QColor('#ffffff')))
+                painter.setFont(QFont('Segoe UI', 8, QFont.Bold))
+                painter.drawText(bx, by, badge_w, 18, Qt.AlignCenter, badge_text)
+
+        self._draw_status_dot(painter, c['status'], ix + icon_size - 8, iy + icon_size - 8)
+        self._draw_incognito(painter, svc, ix, iy)
+
+    # ── DOCK STYLE ────────────────────────────────────────────────────────────
+    def _paint_dock(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+        base_size = 42
+        hover_off = int(self._hover_offsets.get(c['row'], 0.0))
+
+        # Magnification: grow icon when hovered
+        is_hover_target = (c['row'] == self._hover_row)
+        mag = min(1.0, abs(self._hover_offsets.get(c['row'], 0.0)) / 4.0 + 0.3) if is_hover_target else 0.0
+        icon_size = int(base_size + 10 * mag) if is_hover_target else base_size
+
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 12
+        iy = y0 + (h - icon_size) // 2 + hover_off
+
+        # Subtle reflection below icon
+        if self.compact:
+            ref_y = iy + icon_size + 2
+            painter.setBrush(QBrush(QColor(255, 255, 255, 8)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(ix + 4, ref_y, icon_size - 8, 2, 1, 1)
+
+        # Icon
+        self._draw_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 10, int(icon_size * 0.62))
+
+        # Selection: dot below icon
+        if c['is_selected']:
+            dot_size = 6
+            dx = x0 + (w - dot_size) // 2 if self.compact else ix + icon_size // 2 - dot_size // 2
+            dy = iy + icon_size + 4
+            painter.setBrush(QBrush(QColor(self.accent)))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(dx, dy, dot_size, dot_size)
+
+        # Name (expanded)
+        if not self.compact:
+            self._draw_name(painter, svc.name, ix + icon_size + 10, y0, w - ix - icon_size - 30, h)
+
+        # Badge
+        if c['badge'] > 0:
+            self._draw_badge(painter, c['badge'], ix + icon_size - 12, iy - 4)
+
+        self._draw_status_dot(painter, c['status'], ix + icon_size - 8, iy + icon_size - 8)
+        self._draw_incognito(painter, svc, ix, iy)
+
+    # ── NOTION STYLE ──────────────────────────────────────────────────────────
+    def _paint_notion(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+
+        # Selection: accent bar + surface bg
+        if c['is_selected']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 10)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(x0, y0, w, h)
+            painter.setBrush(QBrush(QColor(self.accent)))
+            painter.drawRoundedRect(x0 + 2, y0 + 6, 3, h - 12, 2, 2)
+        elif c['is_hovered']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 6)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(x0, y0, w, h)
+
+        if self.compact:
+            # Compact: small square icon
+            icon_size = 28
+            ix = x0 + (w - icon_size) // 2
+            iy = y0 + (h - icon_size) // 2
+            self._draw_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 6, 18)
+            if c['badge'] > 0:
+                self._draw_badge(painter, c['badge'], ix + icon_size - 8, iy - 4, 'dot')
+        else:
+            # Expanded: color dot + text name + badge count right-aligned
+            dot_size = 8
+            dx = x0 + 14
+            dy = y0 + (h - dot_size) // 2
+            painter.setBrush(QBrush(QColor(svc.color)))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(dx, dy, dot_size, dot_size)
+
+            # Name
+            tx = dx + dot_size + 10
+            avail = w - tx - 40
+            painter.setPen(QPen(QColor('#cdd6f4' if c['is_selected'] else '#a6adc8')))
+            font = QFont('Inter', 11)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            elided = fm.elidedText(svc.name, Qt.ElideRight, avail)
+            painter.drawText(tx, y0, avail, h, Qt.AlignVCenter | Qt.AlignLeft, elided)
+
+            # Badge count right-aligned
+            if c['badge'] > 0:
+                badge_text = str(c['badge']) if c['badge'] <= 99 else '99+'
+                painter.setPen(QPen(QColor(self.accent)))
+                painter.setFont(QFont('JetBrains Mono, Consolas, monospace', 9, QFont.Bold))
+                painter.drawText(x0 + w - 36, y0, 28, h, Qt.AlignVCenter | Qt.AlignRight, badge_text)
+
+        self._draw_status_dot(painter, c['status'], x0 + w - 14 if not self.compact else x0 + (w + 28) // 2 - 2, y0 + h - 12 if not self.compact else y0 + (h + 28) // 2 - 2)
 
 
 # ── Small inline icon label (header) ──────────────────────────────────────────
@@ -597,8 +790,8 @@ class _GlassSidebar(QWidget):  # pragma: no cover
     def __init__(self, accent_color: str = '#7c6af7', parent=None):
         super().__init__(parent)
         self._accent = accent_color
+        self.style: str = 'discord'
         self.setObjectName('sidebar')
-        # Override the global QSS background so our paintEvent shows through
         self.setStyleSheet('QWidget#sidebar { background: transparent; border-right: none; }')
 
     def set_accent(self, color: str):
@@ -610,43 +803,70 @@ class _GlassSidebar(QWidget):  # pragma: no cover
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
 
-        # Base gradient — dark at top, accent-tinted at bottom
-        ac = QColor(self._accent)
-        base_top = QColor(26, 26, 36, 252)
-        base_bot = QColor(
-            min(255, 18 + int(ac.red() * 0.12)),
-            min(255, 18 + int(ac.green() * 0.08)),
-            min(255, 26 + int(ac.blue() * 0.18)),
-            255,
-        )
-        grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0.0, base_top)
-        grad.setColorAt(1.0, base_bot)
-        p.fillRect(0, 0, w, h, grad)
-
-        # Accent glow at bottom (radial fade from center-bottom)
-        glow_ac = QColor(self._accent)
-        glow_ac.setAlpha(30)
-        glow_ac2 = QColor(self._accent)
-        glow_ac2.setAlpha(0)
-        bot_grad = QLinearGradient(0, h - 120, 0, h)
-        bot_grad.setColorAt(0.0, glow_ac2)
-        bot_grad.setColorAt(1.0, glow_ac)
-        p.fillRect(0, h - 120, w, 120, bot_grad)
-
-        # Accent top glow strip (2px, fades left→right)
-        ac_strip = QColor(self._accent)
-        ac_strip.setAlpha(80)
-        ac_strip2 = QColor(self._accent)
-        ac_strip2.setAlpha(0)
-        top_grad = QLinearGradient(0, 0, w, 0)
-        top_grad.setColorAt(0, ac_strip)
-        top_grad.setColorAt(1, ac_strip2)
-        p.fillRect(0, 0, w, 2, top_grad)
-
-        # Right-edge border
-        p.setPen(QColor(50, 50, 65, 200))
-        p.drawLine(w - 1, 0, w - 1, h)
+        if self.style == 'arc':
+            # Flat surface — clean, no gradient
+            p.fillRect(0, 0, w, h, QColor('#1c1c23'))
+            p.setPen(QColor(50, 50, 65, 120))
+            p.drawLine(w - 1, 0, w - 1, h)
+        elif self.style == 'notion':
+            # Flat base — minimal, no effects
+            p.fillRect(0, 0, w, h, QColor('#16161a'))
+            p.setPen(QColor(46, 46, 61, 100))
+            p.drawLine(w - 1, 0, w - 1, h)
+        elif self.style == 'dock':
+            # Glassmorphism — more transparent, stronger glow
+            ac = QColor(self._accent)
+            base = QColor(22, 22, 30, 240)
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, base)
+            grad.setColorAt(1.0, QColor(
+                min(255, 16 + int(ac.red() * 0.15)),
+                min(255, 16 + int(ac.green() * 0.10)),
+                min(255, 24 + int(ac.blue() * 0.22)), 245))
+            p.fillRect(0, 0, w, h, grad)
+            # Strong bottom glow
+            glow = QColor(self._accent)
+            glow.setAlpha(40)
+            glow2 = QColor(self._accent)
+            glow2.setAlpha(0)
+            bg = QLinearGradient(0, h - 150, 0, h)
+            bg.setColorAt(0.0, glow2)
+            bg.setColorAt(1.0, glow)
+            p.fillRect(0, h - 150, w, 150, bg)
+            p.setPen(QColor(50, 50, 65, 160))
+            p.drawLine(w - 1, 0, w - 1, h)
+        else:
+            # Discord — gradient + accent glow (default)
+            ac = QColor(self._accent)
+            base_top = QColor(26, 26, 36, 252)
+            base_bot = QColor(
+                min(255, 18 + int(ac.red() * 0.12)),
+                min(255, 18 + int(ac.green() * 0.08)),
+                min(255, 26 + int(ac.blue() * 0.18)), 255)
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, base_top)
+            grad.setColorAt(1.0, base_bot)
+            p.fillRect(0, 0, w, h, grad)
+            # Bottom glow
+            glow_ac = QColor(self._accent)
+            glow_ac.setAlpha(30)
+            glow_ac2 = QColor(self._accent)
+            glow_ac2.setAlpha(0)
+            bot_grad = QLinearGradient(0, h - 120, 0, h)
+            bot_grad.setColorAt(0.0, glow_ac2)
+            bot_grad.setColorAt(1.0, glow_ac)
+            p.fillRect(0, h - 120, w, 120, bot_grad)
+            # Top accent strip
+            ac_strip = QColor(self._accent)
+            ac_strip.setAlpha(80)
+            ac_strip2 = QColor(self._accent)
+            ac_strip2.setAlpha(0)
+            top_grad = QLinearGradient(0, 0, w, 0)
+            top_grad.setColorAt(0, ac_strip)
+            top_grad.setColorAt(1, ac_strip2)
+            p.fillRect(0, 0, w, 2, top_grad)
+            p.setPen(QColor(50, 50, 65, 200))
+            p.drawLine(w - 1, 0, w - 1, h)
 
         super().paintEvent(event)
 
@@ -753,6 +973,7 @@ class OrbitWindow(QMainWindow):
         self._setup_window()
         _tick()
         self._sidebar_compact: bool = load_settings().get('sidebar_compact', True)
+        self._sidebar_style: str = load_settings().get('sidebar_style', 'discord')
         self._hover_anims: list = []  # kept for compat (unused since sidebar refactor)
         self._build_ui()
         _tick()
@@ -1090,6 +1311,7 @@ class OrbitWindow(QMainWindow):
         # ── SIDEBAR ────────────────────────────────────────────────────────────
         _sidebar_accent = ACCENTS.get(self._accent, ACCENTS['Iris'])
         self._sidebar = _GlassSidebar(_sidebar_accent)
+        self._sidebar.style = self._sidebar_style
         self._glass_sidebar = self._sidebar
         self._sidebar.setMinimumWidth(64)
 
@@ -1162,6 +1384,7 @@ class OrbitWindow(QMainWindow):
         # self.parent() in _tick_hover correctly returns the QListWidget.
         self._svc_delegate = ServiceDelegate(self._svc_list)
         self._svc_delegate.compact = self._sidebar_compact
+        self._svc_delegate.style = self._sidebar_style
         self._svc_list.setItemDelegate(self._svc_delegate)
         self._svc_list.setStyleSheet(
             'QListWidget { background: transparent; border: none; outline: none; }'
@@ -3706,12 +3929,24 @@ class OrbitWindow(QMainWindow):
                 'show_import':       self._show_import_dialog,
                 'set_ad_block':      self._toggle_ad_block,
                 'apply_sidebar_widths': self._apply_sidebar_widths,
+                'apply_sidebar_style':  self._apply_sidebar_style,
                 'apply_tray_settings':  self._apply_tray_settings,
                 'apply_workspace_enabled': self.set_workspaces_enabled,
             },
             parent=self,
         )
         dlg.exec()
+
+    def _apply_sidebar_style(self, style: str):  # pragma: no cover
+        """Switch sidebar visual style."""
+        self._sidebar_style = style
+        self._svc_delegate.style = style
+        self._glass_sidebar.style = style
+        self._glass_sidebar.update()
+        settings = load_settings()
+        settings['sidebar_style'] = style
+        save_settings(settings)
+        self._rebuild_sidebar()
 
     def _apply_sidebar_widths(self, compact_w: int, expanded_w: int):  # pragma: no cover
         """Apply new sidebar widths from settings without requiring restart."""

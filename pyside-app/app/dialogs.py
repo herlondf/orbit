@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, Signal, QSize, QRect
+from PySide6.QtGui import QColor, QFont, QPainter, QFontMetrics
 from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
@@ -17,49 +17,250 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
     QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
+    QButtonGroup,
+    QSizePolicy,
 )
 
 from .catalog import CATALOG, CatalogEntry, GOOGLE_TYPES, google_url
 from .models import Account, Service, new_id, slugify
+from .storage import load_settings, save_settings
+from .theme import ACCENTS
+
+
+# ── icon picker (used inside AddServiceDialog for custom services) ──────────────
+
+_ICON_PALETTE = [
+    # Symbols & tech
+    '⚡', '🔥', '💡', '🚀', '🌟', '💎', '🔮', '🎯',
+    '⭐', '🌈', '🌊', '🍀', '🦋', '🐝', '🦄', '🐉',
+    # Communication
+    '💬', '📧', '📞', '📱', '🔔', '📣', '📡', '🗨️',
+    # Work & tools
+    '💼', '📊', '📈', '🗂️', '📝', '✅', '🔒', '🔑',
+    '🔍', '⚙️', '🛠️', '🖥️', '💾', '☁️', '🔗', '📦',
+    # Media & arts
+    '🎵', '🎮', '📺', '📸', '🎨', '🎬', '🎭', '📰',
+    # Finance & shopping
+    '💰', '🏦', '🛒', '💳', '📉', '🏷️', '🎁', '🏆',
+    # Nature & places
+    '🏠', '🏢', '🌍', '🗺️', '⛅', '🌙', '🌞', '🏔️',
+]
+
+_LETTER_ICONS = [
+    'AI', 'WA', 'TG', 'SL', 'MS', 'GM', 'YT', 'FB',
+    'IN', 'TW', 'RD', 'LI', 'GH', 'BB', 'SP', 'DC',
+]
+
+
+class _IconPickerWidget(QWidget):  # pragma: no cover
+    """Visual emoji/letter icon picker for custom services."""
+
+    icon_changed = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._current = '⚡'
+        self._icon_btns: list[QPushButton] = []
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+
+        # Preview + custom input row
+        top = QHBoxLayout()
+        top.setSpacing(10)
+
+        self._preview = QLabel(self._current)
+        self._preview.setFixedSize(44, 44)
+        self._preview.setAlignment(Qt.AlignCenter)
+        self._preview.setStyleSheet(
+            'background:#313244; border-radius:10px; color:#cdd6f4;'
+            'font-size:22px; border: 2px solid #45475a;'
+        )
+        top.addWidget(self._preview)
+
+        self._custom_edit = QLineEdit()
+        self._custom_edit.setMaxLength(3)
+        self._custom_edit.setPlaceholderText('Texto ou emoji personalizado...')
+        self._custom_edit.setStyleSheet(
+            'background:#1e1e2e; border:1px solid #45475a; border-radius:8px;'
+            'color:#cdd6f4; padding:4px 10px; font-size:13px;'
+        )
+        self._custom_edit.textChanged.connect(self._on_custom_text)
+        top.addWidget(self._custom_edit, 1)
+        root.addLayout(top)
+
+        # Scrollable emoji grid
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setFixedHeight(164)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet('background:transparent;')
+
+        grid_widget = QWidget()
+        grid_widget.setStyleSheet('background:transparent;')
+        grid = QGridLayout(grid_widget)
+        grid.setContentsMargins(0, 0, 4, 0)
+        grid.setSpacing(4)
+
+        all_icons = _ICON_PALETTE + _LETTER_ICONS
+        cols = 8
+        for i, icon in enumerate(all_icons):
+            btn = QPushButton(icon)
+            btn.setFixedSize(36, 36)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                'QPushButton { background:#313244; border-radius:8px; font-size:16px;'
+                '  border:2px solid transparent; color:#cdd6f4; }'
+                'QPushButton:hover { background:#45475a; }'
+                'QPushButton[selected="true"] { border-color:#89b4fa; background:#45475a; }'
+            )
+            btn.setProperty('selected', icon == self._current)
+            btn.clicked.connect(lambda _, ic=icon, b=btn: self._select(ic, b))
+            grid.addWidget(btn, i // cols, i % cols)
+            self._icon_btns.append(btn)
+
+        scroll.setWidget(grid_widget)
+        root.addWidget(scroll)
+
+    def _select(self, icon: str, btn: QPushButton):
+        self._current = icon
+        self._preview.setText(icon)
+        self._custom_edit.blockSignals(True)
+        self._custom_edit.clear()
+        self._custom_edit.blockSignals(False)
+        for b in self._icon_btns:
+            b.setProperty('selected', b is btn)
+            b.style().unpolish(b)
+            b.style().polish(b)
+        self.icon_changed.emit(icon)
+
+    def _on_custom_text(self, text: str):
+        if text:
+            self._current = text[:2]
+            self._preview.setText(self._current)
+            for b in self._icon_btns:
+                b.setProperty('selected', False)
+                b.style().unpolish(b)
+                b.style().polish(b)
+            self.icon_changed.emit(self._current)
+
+    def current_icon(self) -> str:
+        return self._current
+
+    def reset(self):
+        self._current = '⚡'
+        self._preview.setText('⚡')
+        self._custom_edit.clear()
+        for b in self._icon_btns:
+            is_sel = b.text() == '⚡'
+            b.setProperty('selected', is_sel)
+            b.style().unpolish(b)
+            b.style().polish(b)
 
 
 # ── catalog card (used inside AddServiceDialog) ────────────────────────────────
 
-class _CatalogCard(QPushButton):  # pragma: no cover
-    def __init__(self, entry: CatalogEntry, parent=None):
-        super().__init__(parent)
-        self.entry = entry
-        self.setFixedSize(96, 84)
-        self.setCheckable(True)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setObjectName('catalogCard')
+_CATALOG_ROLE_ENTRY = Qt.UserRole
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 8, 6, 6)
-        layout.setSpacing(4)
-        layout.setAlignment(Qt.AlignCenter)
 
-        icon = QLabel(entry.icon)
-        icon.setAlignment(Qt.AlignCenter)
-        icon.setFixedSize(40, 40)
-        icon.setStyleSheet(
-            f'background:{entry.color}; border-radius:10px; color:rgba(255,255,255,0.92);'
-            f'font-size:13px; font-weight:bold;'
-        )
-        layout.addWidget(icon)
+class _CatalogDelegate(QStyledItemDelegate):  # pragma: no cover
+    """Paints catalog cards: colored icon box + name below. No QSS interference."""
 
-        name = QLabel(entry.name)
-        name.setAlignment(Qt.AlignCenter)
-        name.setWordWrap(True)
-        name.setStyleSheet('font-size:11px; color:#cdd6f4;')
-        layout.addWidget(name)
+    _CARD_W = 96
+    _CARD_H = 88
+    _ICON_SIZE = 40
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
+        return QSize(self._CARD_W, self._CARD_H)
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        entry: CatalogEntry = index.data(_CATALOG_ROLE_ENTRY)
+        if entry is None:
+            return
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = option.rect
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+
+        # Card background
+        if is_selected:
+            bg = QColor('#313244')
+        elif is_hover:
+            bg = QColor('#292942')
+        else:
+            bg = QColor('#1e1e2e')
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(bg)
+        painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 8, 8)
+
+        # Colored icon box (centered horizontally)
+        icon_size = self._ICON_SIZE
+        icon_x = rect.x() + (rect.width() - icon_size) // 2
+        icon_y = rect.y() + 10
+        icon_rect = QRect(icon_x, icon_y, icon_size, icon_size)
+
+        # Try brand pixmap first (white fill on colored box)
+        from .brand_icons import brand_icon, has_brand_icon
+        px = brand_icon(entry.type, icon_size, '#FFFFFF') if has_brand_icon(entry.type) else None
+
+        if px and not px.isNull():
+            icon_color = QColor(entry.color) if entry.color else QColor('#6c7086')
+            painter.setBrush(icon_color)
+            painter.drawRoundedRect(icon_rect, 10, 10)
+            scaled = px.scaled(icon_size - 10, icon_size - 10,
+                               Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            px_x = icon_x + (icon_size - scaled.width()) // 2
+            px_y = icon_y + (icon_size - scaled.height()) // 2
+            painter.drawPixmap(px_x, px_y, scaled)
+        else:
+            icon_color = QColor(entry.color) if entry.color else QColor('#6c7086')
+            painter.setBrush(icon_color)
+            painter.drawRoundedRect(icon_rect, 10, 10)
+            font = QFont()
+            font.setPixelSize(14)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QColor(255, 255, 255, 230))
+            painter.drawText(icon_rect, Qt.AlignCenter, entry.icon)
+
+        # Name label (elided)
+        name_y = icon_y + icon_size + 4
+        name_rect = QRect(rect.x() + 4, name_y, rect.width() - 8, 20)
+        name_font = QFont()
+        name_font.setPixelSize(10)
+        painter.setFont(name_font)
+        painter.setPen(QColor('#cdd6f4'))
+        fm = QFontMetrics(name_font)
+        elided = fm.elidedText(entry.name, Qt.ElideRight, name_rect.width())
+        painter.drawText(name_rect, Qt.AlignCenter | Qt.AlignTop, elided)
+
+        # Selection border
+        if is_selected:
+            painter.setPen(QColor('#89b4fa'))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 8, 8)
+
+        painter.restore()
 
 
 # ── AddServiceDialog ───────────────────────────────────────────────────────────
@@ -83,92 +284,83 @@ class AddServiceDialog(QDialog):  # pragma: no cover
         layout.addWidget(self._stack)
 
     def _make_catalog_page(self) -> QWidget:
-        from .catalog import get_all_categories
+        from .catalog import CATALOG
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Header + search bar
+        header_widget = QWidget()
+        header_layout = QVBoxLayout(header_widget)
+        header_layout.setContentsMargins(16, 16, 16, 8)
+        header_layout.setSpacing(8)
 
         title = QLabel('Escolha um serviço')
-        title.setStyleSheet('font-size:15px; font-weight:bold; color:#cdd6f4; padding:16px 16px 8px;')
-        layout.addWidget(title)
+        title.setStyleSheet('font-size:15px; font-weight:bold; color:#cdd6f4;')
+        header_layout.addWidget(title)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._catalog_search = QLineEdit()
+        self._catalog_search.setPlaceholderText('🔍  Buscar serviço...')
+        self._catalog_search.setObjectName('catalogSearch')
+        self._catalog_search.setStyleSheet(
+            'QLineEdit#catalogSearch {'
+            '  background:#1e1e2e; border:1px solid #313244; border-radius:8px;'
+            '  color:#cdd6f4; padding:6px 12px; font-size:13px;'
+            '}'
+            'QLineEdit#catalogSearch:focus { border-color:#89b4fa; }'
+        )
+        self._catalog_search.textChanged.connect(self._filter_catalog)
+        header_layout.addWidget(self._catalog_search)
 
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(12, 0, 12, 12)
-        content_layout.setSpacing(4)
+        layout.addWidget(header_widget)
 
-        self._cards: list[_CatalogCard] = []
-        categories = get_all_categories()
+        # QListWidget in IconMode — no QSS interference on individual cells
+        self._catalog_list = QListWidget()
+        self._catalog_list.setFlow(QListWidget.Flow.LeftToRight)
+        self._catalog_list.setWrapping(True)
+        self._catalog_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self._catalog_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self._catalog_list.setSpacing(4)
+        self._catalog_list.setUniformItemSizes(True)
+        self._catalog_list.setItemDelegate(_CatalogDelegate())
+        self._catalog_list.setStyleSheet(
+            'QListWidget { background:#181825; border:none; padding:8px; }'
+            'QListWidget::item { background:transparent; }'
+        )
+        self._catalog_list.itemClicked.connect(
+            lambda item: self._on_entry_selected(item.data(_CATALOG_ROLE_ENTRY))
+        )
+        self._catalog_list.itemDoubleClicked.connect(
+            lambda item: self._on_entry_selected(item.data(_CATALOG_ROLE_ENTRY))
+        )
 
-        # Group entries by category preserving catalog order
-        from collections import OrderedDict
-        cat_entries: dict[str, list] = OrderedDict((c, []) for c in categories)
-        for entry in CATALOG:
-            cat = entry.category or 'Personalizado'
-            if cat in cat_entries:
-                cat_entries[cat].append(entry)
+        # Populate — custom entries first
+        custom = [e for e in CATALOG if (e.category or '') == 'Personalizado']
+        regular = [e for e in CATALOG if (e.category or '') != 'Personalizado']
 
-        # Separate 'Personalizado' to render last with a divider
-        regular_cats = [(c, e) for c, e in cat_entries.items() if c != 'Personalizado' and e]
-        custom_entries = cat_entries.get('Personalizado', [])
+        for entry in custom + regular:
+            item = QListWidgetItem()
+            item.setData(_CATALOG_ROLE_ENTRY, entry)
+            item.setToolTip(entry.name)
+            item.setSizeHint(QSize(96, 88))
+            self._catalog_list.addItem(item)
 
-        for cat, entries in regular_cats:
-            header = QLabel(cat.upper())
-            header.setStyleSheet(
-                'color:#6c7086; font-size:10px; font-weight:600;'
-                ' letter-spacing:0.5px; padding:8px 4px 4px;'
-            )
-            content_layout.addWidget(header)
-
-            grid_widget = QWidget()
-            grid = QGridLayout(grid_widget)
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setSpacing(8)
-
-            for i, entry in enumerate(entries):
-                card = _CatalogCard(entry)
-                card.clicked.connect(lambda _, e=entry: self._on_entry_selected(e))
-                grid.addWidget(card, i // 4, i % 4)
-                self._cards.append(card)
-
-            content_layout.addWidget(grid_widget)
-
-        # Personalizado section — always last, with separator
-        if custom_entries:
-            sep = QFrame()
-            sep.setFrameShape(QFrame.HLine)
-            sep.setStyleSheet('color: #2e2e3d; margin: 8px 0;')
-            content_layout.addWidget(sep)
-
-            custom_header = QLabel('PERSONALIZADO')
-            custom_header.setStyleSheet(
-                'color:#cba6f7; font-size:10px; font-weight:700;'
-                ' letter-spacing:0.8px; padding:4px 4px 4px;'
-            )
-            content_layout.addWidget(custom_header)
-
-            grid_widget = QWidget()
-            grid = QGridLayout(grid_widget)
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setSpacing(8)
-
-            for i, entry in enumerate(custom_entries):
-                card = _CatalogCard(entry)
-                card.clicked.connect(lambda _, e=entry: self._on_entry_selected(e))
-                grid.addWidget(card, i // 4, i % 4)
-                self._cards.append(card)
-
-            content_layout.addWidget(grid_widget)
-
-        content_layout.addStretch()
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
+        layout.addWidget(self._catalog_list)
         return page
+
+    def _filter_catalog(self, text: str):
+        """Show/hide catalog items based on search text."""
+        query = text.strip().lower()
+        for i in range(self._catalog_list.count()):
+            item = self._catalog_list.item(i)
+            entry: CatalogEntry = item.data(_CATALOG_ROLE_ENTRY)
+            visible = (
+                not query
+                or query in entry.name.lower()
+                or query in (entry.category or '').lower()
+            )
+            item.setHidden(not visible)
 
     def _make_form_page(self) -> QWidget:
         page = QWidget()
@@ -197,18 +389,20 @@ class AddServiceDialog(QDialog):  # pragma: no cover
         self._custom_container = QWidget()
         custom_layout = QVBoxLayout(self._custom_container)
         custom_layout.setContentsMargins(0, 0, 0, 0)
-        custom_layout.setSpacing(8)
+        custom_layout.setSpacing(10)
 
-        icon_form = QFormLayout()
-        icon_form.setSpacing(8)
-        self._icon_edit = QLineEdit()
-        self._icon_edit.setMaxLength(2)
-        self._icon_edit.setText('⚡')
-        self._icon_edit.setPlaceholderText('2 letras ou emoji')
-        icon_form.addRow('Ícone (2 letras/emoji)', self._icon_edit)
-        custom_layout.addLayout(icon_form)
+        # Icon picker label
+        icon_label = QLabel('Ícone')
+        icon_label.setStyleSheet('font-size:12px; color:#a6adc8;')
+        custom_layout.addWidget(icon_label)
+
+        # Icon picker widget
+        self._icon_picker = _IconPickerWidget()
+        self._icon_picker.icon_changed.connect(self._on_icon_changed)
+        custom_layout.addWidget(self._icon_picker)
 
         color_label = QLabel('Cor do ícone')
+        color_label.setStyleSheet('font-size:12px; color:#a6adc8;')
         custom_layout.addWidget(color_label)
 
         _swatch_colors = [
@@ -262,6 +456,9 @@ class AddServiceDialog(QDialog):  # pragma: no cover
             border = '3px solid #ffffff' if c == color else '2px solid transparent'
             btn.setStyleSheet(f'background:{c}; border-radius:18px; border: {border};')
 
+    def _on_icon_changed(self, icon: str):
+        pass  # icon_picker handles its own preview; no extra action needed
+
     def _on_entry_selected(self, entry: CatalogEntry):
         self._selected_entry = entry
         self._form_title.setText(f'Configurar — {entry.name}')
@@ -273,7 +470,7 @@ class AddServiceDialog(QDialog):  # pragma: no cover
             self._url_edit.setText(entry.default_url)
         self._custom_container.setVisible(entry.type == 'custom')
         if entry.type == 'custom':
-            self._icon_edit.setText('⚡')
+            self._icon_picker.reset()
             self._selected_color = '#6c7086'
         self._stack.setCurrentIndex(1)
         self._label_edit.setFocus()
@@ -293,7 +490,7 @@ class AddServiceDialog(QDialog):  # pragma: no cover
         profile_name = f'{entry.type}-{slugify(label)}-{acc_id}'
 
         if entry.type == 'custom':
-            icon = self._icon_edit.text()[:2] or '⚡'
+            icon = self._icon_picker.current_icon() or '⚡'
             color = self._selected_color
         else:
             icon = entry.icon
@@ -597,15 +794,13 @@ class ConfirmDialog(QDialog):  # pragma: no cover
 
 
 class EditWorkspaceDialog(QDialog):  # pragma: no cover
-    """Dialog for creating or editing a workspace (name + accent color)."""
+    """Dialog for creating or editing a workspace (name only)."""
 
     def __init__(self, name: str = '', accent: str = '', bg_color: str = '', parent=None):
         super().__init__(parent)
         self.setWindowTitle('Workspace')
         self.setModal(True)
-        self.setMinimumWidth(360)
-        self._accent = accent
-        self._bg_color = bg_color
+        self.setMinimumWidth(320)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -617,63 +812,6 @@ class EditWorkspaceDialog(QDialog):  # pragma: no cover
         self._name_edit = QLineEdit(name)
         self._name_edit.setPlaceholderText('Nome do workspace')
         form.addRow('Nome', self._name_edit)
-
-        color_widget = QWidget()
-        color_layout = QHBoxLayout(color_widget)
-        color_layout.setContentsMargins(0, 0, 0, 0)
-        color_layout.setSpacing(8)
-
-        self._color_btn = QPushButton()
-        self._color_btn.setFixedSize(32, 24)
-        self._color_btn.setCursor(Qt.PointingHandCursor)
-        self._color_btn.setToolTip('Escolher cor do workspace')
-        self._color_btn.clicked.connect(self._pick_color)
-        self._update_color_btn()
-
-        self._color_label = QLabel(accent if accent else '(padrão)')
-        self._color_label.setStyleSheet('color: #6c7086; font-size: 11px;')
-
-        clear_btn = QPushButton('✕ Limpar')
-        clear_btn.setObjectName('secondaryButton')
-        clear_btn.setFixedHeight(24)
-        clear_btn.setCursor(Qt.PointingHandCursor)
-        clear_btn.clicked.connect(self._clear_color)
-
-        color_layout.addWidget(self._color_btn)
-        color_layout.addWidget(self._color_label)
-        color_layout.addStretch()
-        color_layout.addWidget(clear_btn)
-
-        form.addRow('Cor do workspace', color_widget)
-
-        # Background color picker
-        bg_widget = QWidget()
-        bg_layout = QHBoxLayout(bg_widget)
-        bg_layout.setContentsMargins(0, 0, 0, 0)
-        bg_layout.setSpacing(8)
-
-        self._bg_color_btn = QPushButton()
-        self._bg_color_btn.setFixedSize(32, 24)
-        self._bg_color_btn.setCursor(Qt.PointingHandCursor)
-        self._bg_color_btn.setToolTip('Escolher cor de fundo do workspace')
-        self._bg_color_btn.clicked.connect(self._pick_bg_color)
-        self._update_bg_color_btn()
-
-        self._bg_color_label = QLabel(bg_color if bg_color else '(padrão)')
-        self._bg_color_label.setStyleSheet('color: #6c7086; font-size: 11px;')
-
-        clear_bg_btn = QPushButton('✕ Limpar')
-        clear_bg_btn.setObjectName('secondaryButton')
-        clear_bg_btn.setFixedHeight(24)
-        clear_bg_btn.setCursor(Qt.PointingHandCursor)
-        clear_bg_btn.clicked.connect(self._clear_bg_color)
-
-        bg_layout.addWidget(self._bg_color_btn)
-        bg_layout.addWidget(self._bg_color_label)
-        bg_layout.addStretch()
-        bg_layout.addWidget(clear_bg_btn)
-
-        form.addRow('Cor de fundo', bg_widget)
         layout.addLayout(form)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
@@ -687,57 +825,6 @@ class EditWorkspaceDialog(QDialog):  # pragma: no cover
 
         self._name_edit.setFocus()
 
-    def _pick_color(self):
-        from PySide6.QtWidgets import QColorDialog
-        current = QColor(self._accent) if self._accent else QColor('#7c6af7')
-        color = QColorDialog.getColor(current, self, 'Escolher cor')
-        if color.isValid():
-            self._accent = color.name()
-            self._update_color_btn()
-            self._color_label.setText(self._accent)
-
-    def _clear_color(self):
-        self._accent = ''
-        self._update_color_btn()
-        self._color_label.setText('(padrão)')
-
-    def _update_color_btn(self):
-        if self._accent:
-            self._color_btn.setStyleSheet(
-                f'background: {self._accent}; border: 1px solid #444; border-radius: 4px;'
-            )
-        else:
-            self._color_btn.setStyleSheet(
-                'background: #2a2a3a; border: 1px solid #444; border-radius: 4px;'
-            )
-
-    def _pick_bg_color(self):
-        from PySide6.QtWidgets import QColorDialog
-        current = QColor(self._bg_color) if self._bg_color else QColor('#1e1e2e')
-        color = QColorDialog.getColor(current, self, 'Escolher cor de fundo')
-        if color.isValid():
-            self._bg_color = color.name()
-            self._update_bg_color_btn()
-            self._bg_color_label.setText(self._bg_color)
-
-    def _clear_bg_color(self):
-        self._bg_color = ''
-        self._update_bg_color_btn()
-        self._bg_color_label.setText('(padrão)')
-
-    def _update_bg_color_btn(self):
-        if self._bg_color:
-            self._bg_color_btn.setStyleSheet(
-                f'background: {self._bg_color}; border: 1px solid #444; border-radius: 4px;'
-            )
-        else:
-            self._bg_color_btn.setStyleSheet(
-                'background: #2a2a3a; border: 1px solid #444; border-radius: 4px;'
-            )
-
-    def get_bg_color(self) -> str:
-        return self._bg_color
-
     def _on_accept(self):
         if not self._name_edit.text().strip():
             self._name_edit.setFocus()
@@ -748,7 +835,10 @@ class EditWorkspaceDialog(QDialog):  # pragma: no cover
         return self._name_edit.text().strip()
 
     def get_accent(self) -> str:
-        return self._accent
+        return ''
+
+    def get_bg_color(self) -> str:
+        return ''
 
 
 class WorkspaceScheduleDialog(QDialog):  # pragma: no cover
@@ -999,3 +1089,538 @@ class MasterPasswordDialog(QDialog):  # pragma: no cover
         if result == QMessageBox.StandardButton.Yes:
             self._password = ''
             self.done(2)  # special code: caller should wipe encrypted data
+
+
+# ── General Settings Dialog ────────────────────────────────────────────────────
+
+_NAV_BTN_STYLE = """
+QPushButton {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: {fg};
+    font-size: 13px;
+    text-align: left;
+    padding: 8px 16px;
+    min-height: 36px;
+}}
+QPushButton:hover {{ background: rgba(255,255,255,6); }}
+QPushButton:checked {{ background: rgba(203,166,247,18); color: #cba6f7; font-weight: bold; }}
+"""
+
+
+def _section_title(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setStyleSheet('font-size:11px; font-weight:bold; color:#6c7086; letter-spacing:1px; margin-bottom:4px;')
+    return lbl
+
+
+def _separator() -> QFrame:
+    sep = QFrame()
+    sep.setFrameShape(QFrame.Shape.HLine)
+    sep.setStyleSheet('color: #2e2e3d; margin: 8px 0;')
+    return sep
+
+
+class GeneralSettingsDialog(QDialog):  # pragma: no cover
+    """Main application settings dialog — opened via Ctrl+, or gear button."""
+
+    def __init__(self, callbacks: dict | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Configurações — Orbit')
+        self.setModal(True)
+        self.setMinimumSize(720, 520)
+        self._cbs = callbacks or {}
+        self._settings = load_settings()
+        self._build_ui()
+
+    # ── construction ──────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Left nav panel
+        nav = QWidget()
+        nav.setObjectName('settingsNav')
+        nav.setFixedWidth(190)
+        nav.setStyleSheet(
+            'QWidget#settingsNav { background: #16161a; border-right: 1px solid #2e2e3d; }'
+        )
+        nav_layout = QVBoxLayout(nav)
+        nav_layout.setContentsMargins(8, 20, 8, 16)
+        nav_layout.setSpacing(2)
+
+        title = QLabel('Configurações')
+        title.setStyleSheet('font-size:14px; font-weight:bold; color:#cdd6f4; padding: 0 8px 14px;')
+        nav_layout.addWidget(title)
+
+        self._stack = QStackedWidget()
+        pages = [
+            ('Aparência',    self._page_appearance()),
+            ('Barra Lateral',self._page_sidebar()),
+            ('Comportamento',self._page_behavior()),
+            ('Segurança',    self._page_security()),
+            ('Privacidade',  self._page_privacy()),
+            ('Atualizações', self._page_updates()),
+            ('Sincronização',self._page_sync()),
+        ]
+
+        self._nav_btns: list[QPushButton] = []
+        for i, (label, page) in enumerate(pages):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(_NAV_BTN_STYLE.format(fg='#a6adc8'))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _, idx=i: self._switch_page(idx))
+            nav_layout.addWidget(btn)
+            self._stack.addWidget(page)
+            self._nav_btns.append(btn)
+
+        nav_layout.addStretch()
+
+        # Close button
+        close_btn = QPushButton('Fechar')
+        close_btn.setObjectName('primaryButton')
+        close_btn.clicked.connect(self._save_and_close)
+        nav_layout.addWidget(close_btn)
+
+        root.addWidget(nav)
+        root.addWidget(self._stack, 1)
+
+        self._switch_page(0)
+
+    def _switch_page(self, idx: int):
+        for i, btn in enumerate(self._nav_btns):
+            btn.setChecked(i == idx)
+        self._stack.setCurrentIndex(idx)
+
+    def _scroll_page(self, inner: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(inner)
+        return scroll
+
+    # ── pages ─────────────────────────────────────────────────────────────────
+
+    def _page_appearance(self) -> QScrollArea:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(16)
+
+        lay.addWidget(_section_title('TEMA'))
+
+        self._theme_btns: dict[str, QPushButton] = {}
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(8)
+        cur_theme = self._settings.get('theme', 'dark')
+        for t_id, t_label in [('dark', '🌙 Escuro'), ('light', '☀️ Claro'), ('system', '🖥️ Automático')]:
+            btn = QPushButton(t_label)
+            btn.setCheckable(True)
+            btn.setChecked(cur_theme == t_id)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(36)
+            btn.setObjectName('primaryButton' if cur_theme == t_id else '')
+            btn.clicked.connect(lambda _, tid=t_id: self._select_theme(tid))
+            theme_row.addWidget(btn)
+            self._theme_btns[t_id] = btn
+        lay.addLayout(theme_row)
+
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('COR DE DESTAQUE'))
+
+        self._accent_btns: dict[str, QPushButton] = {}
+        accent_row = QHBoxLayout()
+        accent_row.setSpacing(8)
+        cur_accent = self._settings.get('accent', 'Iris')
+        for name, color in ACCENTS.items():
+            btn = QPushButton(name)
+            btn.setCheckable(True)
+            btn.setChecked(cur_accent == name)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(36)
+            checked_style = f'QPushButton {{ background:{color}; color:#fff; border:2px solid {color}; border-radius:6px; }}'
+            normal_style  = f'QPushButton {{ background:rgba(255,255,255,8); color:#cdd6f4; border:1px solid #3e3e52; border-radius:6px; }} QPushButton:hover {{ border-color:{color}; }}'
+            btn.setStyleSheet(checked_style if cur_accent == name else normal_style)
+            btn.clicked.connect(lambda _, n=name, c=color, ns=normal_style, cs=checked_style: self._select_accent(n, c, ns, cs))
+            accent_row.addWidget(btn)
+            self._accent_btns[name] = btn
+        lay.addLayout(accent_row)
+
+        lay.addStretch()
+        return self._scroll_page(w)
+
+    def _page_sidebar(self) -> QScrollArea:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(16)
+
+        lay.addWidget(_section_title('TAMANHO'))
+
+        form = QFormLayout()
+        form.setSpacing(12)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._compact_w_spin = QSpinBox()
+        self._compact_w_spin.setRange(52, 120)
+        self._compact_w_spin.setSuffix(' px')
+        self._compact_w_spin.setValue(self._settings.get('sidebar_compact_width', 68))
+        self._compact_w_spin.setToolTip('Largura da sidebar no modo minimizado')
+        form.addRow('Largura minimizada:', self._compact_w_spin)
+
+        self._expanded_w_spin = QSpinBox()
+        self._expanded_w_spin.setRange(160, 400)
+        self._expanded_w_spin.setSuffix(' px')
+        self._expanded_w_spin.setValue(self._settings.get('sidebar_expanded_width', 220))
+        self._expanded_w_spin.setToolTip('Largura da sidebar no modo expandido')
+        form.addRow('Largura expandida:', self._expanded_w_spin)
+
+        lay.addLayout(form)
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('COMPORTAMENTO'))
+
+        # Sidebar style picker
+        from PySide6.QtWidgets import QComboBox
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel('Estilo da sidebar:'))
+        self._sidebar_style_combo = QComboBox()
+        _style_map = {'discord': 'Discord', 'arc': 'Arc Browser', 'dock': 'Dock (macOS)', 'notion': 'Notion'}
+        for key, label in _style_map.items():
+            self._sidebar_style_combo.addItem(label, key)
+        current = self._settings.get('sidebar_style', 'discord')
+        idx = list(_style_map.keys()).index(current) if current in _style_map else 0
+        self._sidebar_style_combo.setCurrentIndex(idx)
+        self._sidebar_style_combo.currentIndexChanged.connect(self._on_sidebar_style_changed)
+        style_row.addWidget(self._sidebar_style_combo)
+        lay.addLayout(style_row)
+
+        self._starts_compact_chk = QCheckBox('Iniciar com a barra lateral minimizada')
+        self._starts_compact_chk.setChecked(self._settings.get('sidebar_compact', True))
+        lay.addWidget(self._starts_compact_chk)
+
+        lay.addStretch()
+        return self._scroll_page(w)
+
+    def _page_behavior(self) -> QScrollArea:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(16)
+
+        lay.addWidget(_section_title('BANDEJA DO SISTEMA'))
+
+        self._show_tray_chk = QCheckBox('Mostrar ícone na bandeja do sistema')
+        self._show_tray_chk.setChecked(self._settings.get('show_tray', True))
+        lay.addWidget(self._show_tray_chk)
+
+        self._minimize_tray_chk = QCheckBox('Minimizar para a bandeja ao fechar a janela')
+        self._minimize_tray_chk.setChecked(self._settings.get('minimize_to_tray', False))
+        lay.addWidget(self._minimize_tray_chk)
+
+        # Force show_tray if minimize_to_tray is on
+        self._minimize_tray_chk.toggled.connect(
+            lambda on: self._show_tray_chk.setChecked(True) if on else None
+        )
+
+        note = QLabel('Se "Minimizar para bandeja" estiver ativo, o ícone da bandeja ficará sempre visível.')
+        note.setWordWrap(True)
+        note.setStyleSheet('color:#6c7086; font-size:11px;')
+        lay.addWidget(note)
+
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('INICIALIZAÇÃO'))
+
+        self._startup_chk = QCheckBox('Iniciar automaticamente com o Windows')
+        startup_cb = self._cbs.get('is_startup_enabled')
+        self._startup_chk.setChecked(startup_cb() if callable(startup_cb) else False)
+        self._startup_chk.toggled.connect(self._on_startup_toggled)
+        lay.addWidget(self._startup_chk)
+
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('SERVIÇOS'))
+
+        self._ws_enabled_chk = QCheckBox('Habilitar seletor de workspaces na barra lateral')
+        self._ws_enabled_chk.setChecked(self._settings.get('workspaces_enabled', True))
+        lay.addWidget(self._ws_enabled_chk)
+
+        self._preload_chk = QCheckBox('Pré-carregar todos os serviços na abertura')
+        self._preload_chk.setChecked(self._settings.get('preload_on_start', False))
+        preload_note = QLabel('Carrega os serviços em segundo plano ao iniciar. '
+                              'Consome mais memória, mas elimina o delay ao trocar de serviço.')
+        preload_note.setWordWrap(True)
+        preload_note.setStyleSheet('color:#6c7086; font-size:11px;')
+        lay.addWidget(self._preload_chk)
+        lay.addWidget(preload_note)
+
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('NOTIFICAÇÕES'))
+
+        notif_row = QHBoxLayout()
+        notif_row.setSpacing(10)
+        notif_lbl = QLabel('Estilo de notificação:')
+        notif_lbl.setStyleSheet('font-size:13px;')
+        self._notif_style_combo = QComboBox()
+        self._notif_style_combo.addItem('Orbit (toast interno)', 'orbit')
+        self._notif_style_combo.addItem('Sistema (bandeja do Windows)', 'system')
+        self._notif_style_combo.addItem('Ambos', 'both')
+        cur = self._settings.get('notification_style', 'orbit')
+        idx = self._notif_style_combo.findData(cur)
+        self._notif_style_combo.setCurrentIndex(max(0, idx))
+        notif_row.addWidget(notif_lbl)
+        notif_row.addWidget(self._notif_style_combo)
+        notif_row.addStretch()
+        lay.addLayout(notif_row)
+
+        notif_note = QLabel(
+            '<b>Orbit:</b> toast animado dentro do app. '
+            '<b>Sistema:</b> notificação nativa do Windows via bandeja. '
+            '<b>Ambos:</b> exibe os dois (pode gerar duplicatas em alguns serviços).'
+        )
+        notif_note.setWordWrap(True)
+        notif_note.setStyleSheet('color:#6c7086; font-size:11px;')
+        lay.addWidget(notif_note)
+
+        lay.addStretch()
+        return self._scroll_page(w)
+
+    def _page_security(self) -> QScrollArea:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(16)
+
+        lay.addWidget(_section_title('BLOQUEIO POR PIN'))
+        pin_desc = QLabel('Configure um PIN de 4 a 8 dígitos para bloquear o Orbit automaticamente após inatividade.')
+        pin_desc.setWordWrap(True)
+        pin_desc.setStyleSheet('color:#a6adc8; font-size:12px;')
+        lay.addWidget(pin_desc)
+        pin_btn = QPushButton('Configurar PIN...')
+        pin_btn.setObjectName('primaryButton')
+        pin_btn.setFixedWidth(200)
+        pin_btn.clicked.connect(self._on_pin_clicked)
+        lay.addWidget(pin_btn)
+
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('CRIPTOGRAFIA'))
+        enc_desc = QLabel('Proteja seus workspaces e configurações com criptografia AES-256-GCM usando uma senha mestre.')
+        enc_desc.setWordWrap(True)
+        enc_desc.setStyleSheet('color:#a6adc8; font-size:12px;')
+        lay.addWidget(enc_desc)
+        enc_btn = QPushButton('Criptografar arquivos...')
+        enc_btn.setFixedWidth(200)
+        enc_btn.clicked.connect(self._on_encrypt_clicked)
+        lay.addWidget(enc_btn)
+
+        lay.addStretch()
+        return self._scroll_page(w)
+
+    def _page_privacy(self) -> QScrollArea:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(16)
+
+        lay.addWidget(_section_title('BLOQUEADOR DE ANÚNCIOS'))
+        ad_desc = QLabel('Bloqueia scripts de rastreamento e anúncios em todos os serviços abertos no Orbit.')
+        ad_desc.setWordWrap(True)
+        ad_desc.setStyleSheet('color:#a6adc8; font-size:12px;')
+        lay.addWidget(ad_desc)
+
+        self._ad_block_chk = QCheckBox('Ativar bloqueador de anúncios')
+        self._ad_block_chk.setChecked(self._settings.get('ad_block', True))
+        lay.addWidget(self._ad_block_chk)
+
+        lay.addStretch()
+        return self._scroll_page(w)
+
+    def _page_updates(self) -> QScrollArea:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(16)
+
+        lay.addWidget(_section_title('ATUALIZAÇÕES'))
+        upd_desc = QLabel('O Orbit verifica automaticamente atualizações ao iniciar. Você também pode verificar manualmente.')
+        upd_desc.setWordWrap(True)
+        upd_desc.setStyleSheet('color:#a6adc8; font-size:12px;')
+        lay.addWidget(upd_desc)
+
+        upd_btn = QPushButton('Verificar atualizações agora')
+        upd_btn.setObjectName('primaryButton')
+        upd_btn.setFixedWidth(240)
+        upd_btn.clicked.connect(self._on_check_updates)
+        lay.addWidget(upd_btn)
+
+        lay.addStretch()
+        return self._scroll_page(w)
+
+    def _page_sync(self) -> QScrollArea:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(20)
+
+        lay.addWidget(_section_title('SINCRONIZAÇÃO NA NUVEM'))
+        gist_desc = QLabel('Sincronize suas configurações via GitHub Gist para manter múltiplos dispositivos atualizados.')
+        gist_desc.setWordWrap(True)
+        gist_desc.setStyleSheet('color:#a6adc8; font-size:12px;')
+        lay.addWidget(gist_desc)
+        gist_btn = QPushButton('Configurar GitHub Gist...')
+        gist_btn.setObjectName('primaryButton')
+        gist_btn.setFixedWidth(240)
+        gist_btn.clicked.connect(self._on_gist_sync)
+        lay.addWidget(gist_btn)
+
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('WEBDAV / ONEDRIVE'))
+        webdav_desc = QLabel('Sincronize com qualquer servidor WebDAV, incluindo OneDrive, Nextcloud e outros.')
+        webdav_desc.setWordWrap(True)
+        webdav_desc.setStyleSheet('color:#a6adc8; font-size:12px;')
+        lay.addWidget(webdav_desc)
+        webdav_btn = QPushButton('Configurar WebDAV / OneDrive...')
+        webdav_btn.setFixedWidth(240)
+        webdav_btn.clicked.connect(self._on_webdav)
+        lay.addWidget(webdav_btn)
+
+        lay.addWidget(_separator())
+        lay.addWidget(_section_title('MIGRAÇÃO'))
+        import_desc = QLabel('Importe serviços e configurações de aplicativos como Rambox ou Ferdium.')
+        import_desc.setWordWrap(True)
+        import_desc.setStyleSheet('color:#a6adc8; font-size:12px;')
+        lay.addWidget(import_desc)
+        import_btn = QPushButton('Importar do Rambox/Ferdium...')
+        import_btn.setFixedWidth(240)
+        import_btn.clicked.connect(self._on_import)
+        lay.addWidget(import_btn)
+
+        lay.addStretch()
+        return self._scroll_page(w)
+
+    # ── actions ───────────────────────────────────────────────────────────────
+
+    def _select_theme(self, theme_id: str):
+        self._settings['theme'] = theme_id
+        for tid, btn in self._theme_btns.items():
+            btn.setChecked(tid == theme_id)
+            btn.setObjectName('primaryButton' if tid == theme_id else '')
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        cb = self._cbs.get('apply_theme')
+        if callable(cb):
+            cb(theme_id)
+
+    def _select_accent(self, name: str, color: str, normal_style: str, checked_style: str):
+        self._settings['accent'] = name
+        for n, btn in self._accent_btns.items():
+            cur_c = ACCENTS[n]
+            cur_ns = f'QPushButton {{ background:rgba(255,255,255,8); color:#cdd6f4; border:1px solid #3e3e52; border-radius:6px; }} QPushButton:hover {{ border-color:{cur_c}; }}'
+            cur_cs = f'QPushButton {{ background:{cur_c}; color:#fff; border:2px solid {cur_c}; border-radius:6px; }}'
+            btn.setChecked(n == name)
+            btn.setStyleSheet(cur_cs if n == name else cur_ns)
+        cb = self._cbs.get('set_accent')
+        if callable(cb):
+            cb(name)
+
+    def _on_startup_toggled(self, checked: bool):
+        cb = self._cbs.get('set_startup')
+        if callable(cb):
+            cb(checked)
+
+    def _on_pin_clicked(self):
+        cb = self._cbs.get('show_pin_config')
+        if callable(cb):
+            cb()
+
+    def _on_encrypt_clicked(self):
+        cb = self._cbs.get('show_encrypt_config')
+        if callable(cb):
+            cb()
+
+    def _on_check_updates(self):
+        cb = self._cbs.get('check_updates')
+        if callable(cb):
+            cb()
+
+    def _on_gist_sync(self):
+        cb = self._cbs.get('show_cloud_sync')
+        if callable(cb):
+            cb()
+
+    def _on_webdav(self):
+        cb = self._cbs.get('show_webdav')
+        if callable(cb):
+            cb()
+
+    def _on_import(self):
+        cb = self._cbs.get('show_import')
+        if callable(cb):
+            cb()
+
+    def _on_sidebar_style_changed(self, index):
+        style = self._sidebar_style_combo.currentData()
+        cb = self._cbs.get('apply_sidebar_style')
+        if callable(cb):
+            cb(style)
+
+    # ── save & close ──────────────────────────────────────────────────────────
+
+    def _save_and_close(self):
+        # Sidebar sizes
+        self._settings['sidebar_compact_width']  = self._compact_w_spin.value()
+        self._settings['sidebar_expanded_width'] = self._expanded_w_spin.value()
+        self._settings['sidebar_compact'] = self._starts_compact_chk.isChecked()
+        self._settings['sidebar_style'] = self._sidebar_style_combo.currentData()
+
+        # Behavior / tray
+        min_tray = self._minimize_tray_chk.isChecked()
+        show_tray = self._show_tray_chk.isChecked()
+        if min_tray:
+            show_tray = True  # enforce dependency
+        self._settings['minimize_to_tray'] = min_tray
+        self._settings['show_tray'] = show_tray
+
+        # Privacy / ad block
+        ad_block = self._ad_block_chk.isChecked()
+        self._settings['ad_block'] = ad_block
+        cb = self._cbs.get('set_ad_block')
+        if callable(cb):
+            cb(ad_block)
+
+        # Services — workspace toggle + preload
+        ws_enabled = self._ws_enabled_chk.isChecked()
+        self._settings['workspaces_enabled'] = ws_enabled
+        cb = self._cbs.get('apply_workspace_enabled')
+        if callable(cb):
+            cb(ws_enabled)
+
+        preload = self._preload_chk.isChecked()
+        self._settings['preload_on_start'] = preload
+
+        # Notifications
+        self._settings['notification_style'] = self._notif_style_combo.currentData()
+
+        save_settings(self._settings)
+
+        # Notify parent to apply sidebar width changes
+        cb = self._cbs.get('apply_sidebar_widths')
+        if callable(cb):
+            cb(
+                self._settings['sidebar_compact_width'],
+                self._settings['sidebar_expanded_width'],
+            )
+
+        # Apply tray visibility
+        cb = self._cbs.get('apply_tray_settings')
+        if callable(cb):
+            cb(show_tray)
+
+        self.accept()
+
+    def closeEvent(self, event):
+        self._save_and_close()
+
