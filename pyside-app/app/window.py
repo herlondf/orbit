@@ -224,10 +224,16 @@ class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
 
     # ── Size hints per style ──────────────────────────────────────────────────
     _SIZES = {
-        'discord': {'compact': (56, 56), 'expanded': (200, 48)},
-        'arc':     {'compact': (72, 64), 'expanded': (220, 48)},
-        'dock':    {'compact': (64, 70), 'expanded': (220, 54)},
-        'notion':  {'compact': (68, 48), 'expanded': (240, 36)},
+        'discord':  {'compact': (56, 56), 'expanded': (200, 48)},
+        'arc':      {'compact': (72, 64), 'expanded': (220, 48)},
+        'dock':     {'compact': (64, 70), 'expanded': (220, 54)},
+        'notion':   {'compact': (68, 48), 'expanded': (240, 36)},
+        'slack':    {'compact': (60, 52), 'expanded': (220, 44)},
+        'spotify':  {'compact': (58, 58), 'expanded': (210, 50)},
+        'teams':    {'compact': (62, 56), 'expanded': (220, 48)},
+        'telegram': {'compact': (60, 60), 'expanded': (210, 50)},
+        'figma':    {'compact': (54, 54), 'expanded': (200, 42)},
+        'linear':   {'compact': (56, 52), 'expanded': (210, 44)},
     }
 
     def sizeHint(self, option, index) -> QSize:
@@ -275,6 +281,12 @@ class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
             'arc': self._paint_arc,
             'dock': self._paint_dock,
             'notion': self._paint_notion,
+            'slack': self._paint_slack,
+            'spotify': self._paint_spotify,
+            'teams': self._paint_teams,
+            'telegram': self._paint_telegram,
+            'figma': self._paint_figma,
+            'linear': self._paint_linear,
         }.get(self.style, self._paint_discord)
         style_fn(painter, svc, ctx)
         painter.restore()
@@ -539,6 +551,196 @@ class ServiceDelegate(QStyledItemDelegate):  # pragma: no cover
                 painter.drawText(x0 + w - 36, y0, 28, h, Qt.AlignVCenter | Qt.AlignRight, badge_text)
 
         self._draw_status_dot(painter, c['status'], x0 + w - 14 if not self.compact else x0 + (w + 28) // 2 - 2, y0 + h - 12 if not self.compact else y0 + (h + 28) // 2 - 2)
+
+    # ── SLACK STYLE ───────────────────────────────────────────────────────────
+    def _paint_slack(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+        icon_size = 34
+        hover_off = int(self._hover_offsets.get(c['row'], 0.0))
+
+        # Selection: left border 3px + bg tint
+        if c['is_selected']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 14)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(x0, y0, w, h)
+            painter.setBrush(QBrush(QColor(self.accent)))
+            painter.drawRect(x0, y0 + 4, 3, h - 8)
+        elif c['is_hovered']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 8)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(x0, y0, w, h)
+
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 12
+        iy = y0 + (h - icon_size) // 2 + hover_off
+        self._draw_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 8, 20)
+
+        if not self.compact:
+            self._draw_name(painter, svc.name, ix + icon_size + 8, y0, w - ix - icon_size - 28, h, '#d1d2d3', 10)
+            if c['badge'] > 0:
+                self._draw_badge(painter, c['badge'], x0 + w - 32, y0 + (h - 16) // 2)
+        elif c['badge'] > 0:
+            self._draw_badge(painter, c['badge'], ix + icon_size - 10, iy - 4, 'dot')
+        self._draw_status_dot(painter, c['status'], ix + icon_size - 8, iy + icon_size - 8)
+
+    # ── SPOTIFY STYLE ─────────────────────────────────────────────────────────
+    def _paint_spotify(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+        icon_size = 42
+        hover_off = int(self._hover_offsets.get(c['row'], 0.0))
+
+        # Selection: rounded pill with green-tinted bg
+        if c['is_selected']:
+            painter.setBrush(QBrush(QColor(29, 185, 84, 25)))  # Spotify green tint
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 4, y0 + 3, w - 8, h - 6, 6, 6)
+        elif c['is_hovered']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 10)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 4, y0 + 3, w - 8, h - 6, 6, 6)
+
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 8
+        iy = y0 + (h - icon_size) // 2 + hover_off
+        self._draw_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 6, 26)
+
+        if not self.compact:
+            name_c = '#1db954' if c['is_selected'] else '#b3b3b3'
+            self._draw_name(painter, svc.name, ix + icon_size + 10, y0, w - ix - icon_size - 30, h, name_c, 11)
+        if c['badge'] > 0:
+            # Green dot badge (Spotify-like)
+            bx = ix + icon_size - 8 if self.compact else x0 + w - 24
+            by = iy - 2 if self.compact else y0 + (h - 8) // 2
+            painter.setBrush(QBrush(QColor('#1db954')))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(bx, by, 8, 8)
+        self._draw_status_dot(painter, c['status'], ix + icon_size - 8, iy + icon_size - 8)
+
+    # ── TEAMS STYLE ───────────────────────────────────────────────────────────
+    def _paint_teams(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+        icon_size = 36
+        hover_off = int(self._hover_offsets.get(c['row'], 0.0))
+
+        # Selection: blue left bar + light bg (corporate)
+        if c['is_selected']:
+            painter.setBrush(QBrush(QColor(98, 100, 167, 30)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(x0, y0, w, h)
+            painter.setBrush(QBrush(QColor('#6264a7')))
+            painter.drawRect(x0, y0, 4, h)
+        elif c['is_hovered']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 8)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(x0, y0, w, h)
+
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 14
+        iy = y0 + (h - icon_size) // 2 + hover_off
+        self._draw_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 4, 22)  # low radius = square-ish
+
+        if not self.compact:
+            self._draw_name(painter, svc.name, ix + icon_size + 10, y0, w - ix - icon_size - 30, h, '#c5c6cb', 10)
+            if c['badge'] > 0:
+                self._draw_badge(painter, c['badge'], x0 + w - 34, y0 + (h - 16) // 2)
+        elif c['badge'] > 0:
+            self._draw_badge(painter, c['badge'], ix + icon_size - 10, iy - 4)
+        self._draw_status_dot(painter, c['status'], ix + icon_size - 8, iy + icon_size - 8)
+
+    # ── TELEGRAM STYLE ────────────────────────────────────────────────────────
+    def _paint_telegram(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+        icon_size = 42
+        hover_off = int(self._hover_offsets.get(c['row'], 0.0))
+
+        # Hover/selection: subtle rounded bg
+        if c['is_selected']:
+            painter.setBrush(QBrush(QColor(42, 141, 197, 30)))  # Telegram blue tint
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 4, y0 + 2, w - 8, h - 4, 10, 10)
+        elif c['is_hovered']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 8)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 4, y0 + 2, w - 8, h - 4, 10, 10)
+
+        # Circular avatar
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 10
+        iy = y0 + (h - icon_size) // 2 + hover_off
+        self._draw_circular_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 26)
+
+        if not self.compact:
+            self._draw_name(painter, svc.name, ix + icon_size + 10, y0, w - ix - icon_size - 30, h, '#e4ecf0', 11)
+        if c['badge'] > 0:
+            bx = ix + icon_size - 12 if self.compact else x0 + w - 34
+            by = iy - 2 if self.compact else y0 + (h - 16) // 2
+            # Telegram blue badge
+            badge_text = str(c['badge']) if c['badge'] <= 99 else '99+'
+            badge_w = max(18, len(badge_text) * 7 + 6)
+            painter.setBrush(QBrush(QColor('#2a8dc5')))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bx, by, badge_w, 16, 8, 8)
+            painter.setPen(QPen(QColor('#ffffff')))
+            painter.setFont(QFont('Segoe UI', 8, QFont.Bold))
+            painter.drawText(bx, by, badge_w, 16, Qt.AlignCenter, badge_text)
+        self._draw_status_dot(painter, c['status'], ix + icon_size - 8, iy + icon_size - 8)
+
+    # ── FIGMA STYLE ───────────────────────────────────────────────────────────
+    def _paint_figma(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+        icon_size = 32
+        hover_off = int(self._hover_offsets.get(c['row'], 0.0))
+
+        # Ultra-minimal: thin left line on selection, no bg
+        if c['is_selected']:
+            painter.setBrush(QBrush(QColor(self.accent)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 1, y0 + 8, 2, h - 16, 1, 1)
+        elif c['is_hovered']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 6)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 4, y0 + 2, w - 8, h - 4, 6, 6)
+
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 12
+        iy = y0 + (h - icon_size) // 2 + hover_off
+        self._draw_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 8, 20)
+
+        if not self.compact:
+            color = '#e5e5e5' if c['is_selected'] else '#999'
+            self._draw_name(painter, svc.name, ix + icon_size + 8, y0, w - ix - icon_size - 24, h, color, 10)
+        if c['badge'] > 0:
+            self._draw_badge(painter, c['badge'], ix + icon_size - 8, iy - 4, 'dot')
+        self._draw_status_dot(painter, c['status'], ix + icon_size - 6, iy + icon_size - 6)
+
+    # ── LINEAR STYLE ──────────────────────────────────────────────────────────
+    def _paint_linear(self, painter, svc, c):
+        x0, y0, w, h = c['x0'], c['y0'], c['w'], c['h']
+        icon_size = 30
+        hover_off = int(self._hover_offsets.get(c['row'], 0.0))
+
+        # Selection: full-width subtle bg + left accent dot
+        if c['is_selected']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 10)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 3, y0 + 2, w - 6, h - 4, 8, 8)
+            painter.setBrush(QBrush(QColor(self.accent)))
+            painter.drawEllipse(x0 + 4, y0 + (h - 6) // 2, 6, 6)
+        elif c['is_hovered']:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 5)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(x0 + 3, y0 + 2, w - 6, h - 4, 8, 8)
+
+        ix = x0 + (w - icon_size) // 2 if self.compact else x0 + 16
+        iy = y0 + (h - icon_size) // 2 + hover_off
+        self._draw_icon(painter, svc, c['pixmap'], ix, iy, icon_size, 7, 18)
+
+        if not self.compact:
+            color = '#f7f8f8' if c['is_selected'] else '#8a8f98'
+            self._draw_name(painter, svc.name, ix + icon_size + 8, y0, w - ix - icon_size - 28, h, color, 10)
+            if c['badge'] > 0:
+                badge_text = str(c['badge']) if c['badge'] <= 99 else '99+'
+                painter.setPen(QPen(QColor('#5e6ad2')))  # Linear purple
+                painter.setFont(QFont('Inter', 9, QFont.Bold))
+                painter.drawText(x0 + w - 32, y0, 24, h, Qt.AlignVCenter | Qt.AlignRight, badge_text)
+        elif c['badge'] > 0:
+            self._draw_badge(painter, c['badge'], ix + icon_size - 8, iy - 4, 'dot')
+        self._draw_status_dot(painter, c['status'], ix + icon_size - 6, iy + icon_size - 6)
 
 
 # ── Small inline icon label (header) ──────────────────────────────────────────
@@ -840,7 +1042,6 @@ class _GlassSidebar(QWidget):  # pragma: no cover
                 min(255, 16 + int(ac.green() * 0.10)),
                 min(255, 24 + int(ac.blue() * 0.22)), 245))
             p.fillRect(0, 0, w, h, grad)
-            # Strong bottom glow
             glow = QColor(self._accent)
             glow.setAlpha(40)
             glow2 = QColor(self._accent)
@@ -850,6 +1051,52 @@ class _GlassSidebar(QWidget):  # pragma: no cover
             bg.setColorAt(1.0, glow)
             p.fillRect(0, h - 150, w, 150, bg)
             p.setPen(QColor(50, 50, 65, 160))
+            p.drawLine(w - 1, 0, w - 1, h)
+        elif self.style == 'slack':
+            # Slack: deep aubergine gradient
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, QColor('#1a0525'))
+            grad.setColorAt(1.0, QColor('#350d36'))
+            p.fillRect(0, 0, w, h, grad)
+            p.setPen(QColor(80, 40, 80, 120))
+            p.drawLine(w - 1, 0, w - 1, h)
+        elif self.style == 'spotify':
+            # Spotify: near-black with subtle green accent
+            p.fillRect(0, 0, w, h, QColor('#0a0a0a'))
+            glow = QLinearGradient(0, h - 100, 0, h)
+            glow.setColorAt(0.0, QColor(29, 185, 84, 0))
+            glow.setColorAt(1.0, QColor(29, 185, 84, 15))
+            p.fillRect(0, h - 100, w, 100, glow)
+            p.setPen(QColor(40, 40, 40, 180))
+            p.drawLine(w - 1, 0, w - 1, h)
+        elif self.style == 'teams':
+            # Teams: corporate dark blue
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, QColor('#1b1b2f'))
+            grad.setColorAt(1.0, QColor('#11111f'))
+            p.fillRect(0, 0, w, h, grad)
+            p.setPen(QColor(98, 100, 167, 60))
+            p.drawLine(w - 1, 0, w - 1, h)
+        elif self.style == 'telegram':
+            # Telegram: dark with blue tint
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, QColor('#0e1621'))
+            grad.setColorAt(1.0, QColor('#17212b'))
+            p.fillRect(0, 0, w, h, grad)
+            p.setPen(QColor(42, 141, 197, 40))
+            p.drawLine(w - 1, 0, w - 1, h)
+        elif self.style == 'figma':
+            # Figma: pure dark, ultra-clean
+            p.fillRect(0, 0, w, h, QColor('#1e1e1e'))
+            p.setPen(QColor(60, 60, 60, 100))
+            p.drawLine(w - 1, 0, w - 1, h)
+        elif self.style == 'linear':
+            # Linear: very dark with subtle purple tint
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, QColor('#111115'))
+            grad.setColorAt(1.0, QColor('#16141f'))
+            p.fillRect(0, 0, w, h, grad)
+            p.setPen(QColor(94, 106, 210, 30))
             p.drawLine(w - 1, 0, w - 1, h)
         else:
             # Discord — gradient + accent glow (default)
@@ -1339,16 +1586,19 @@ class OrbitWindow(QMainWindow):
         sb_layout.setContentsMargins(0, 12, 0, 8)
         sb_layout.setSpacing(0)
 
-        _lottie_path = LottieLabel.lottie_path()
-        if os.path.exists(_lottie_path):
-            logo = LottieLabel(_lottie_path, size=36, fps=30, skip_frames=2)
-        else:
-            logo = QLabel()
-            logo.setAlignment(Qt.AlignCenter)
-            logo.setFixedHeight(40)
-            logo.setPixmap(_orbit_logo_pixmap(34))
-            logo.setStyleSheet('background: transparent;')
-        sb_layout.addWidget(logo)
+        # Stylized 'Orbit' text logo with accent gradient
+        _accent_hex = ACCENTS.get(self._accent, ACCENTS['Iris'])
+        self._logo_label = QLabel('O')
+        self._logo_label.setAlignment(Qt.AlignCenter)
+        self._logo_label.setFixedHeight(40)
+        self._logo_label.setStyleSheet(
+            f'background: transparent; color: {_accent_hex};'
+            f' font-size: 22px; font-weight: 800; font-family: Inter, Segoe UI, sans-serif;'
+            f' letter-spacing: 2px;'
+        )
+        if not self._sidebar_compact:
+            self._logo_label.setText('Orbit')
+        sb_layout.addWidget(self._logo_label)
         sb_layout.addSpacing(8)
 
         # Workspace switcher — hidden when workspaces_enabled=False
@@ -2026,6 +2276,8 @@ class OrbitWindow(QMainWindow):
             self._splitter.setSizes([target_w, total - target_w])
             # Notify delegate and refresh list layout
             self._svc_delegate.compact = self._sidebar_compact
+            if hasattr(self, '_logo_label'):
+                self._logo_label.setText('O' if self._sidebar_compact else 'Orbit')
             self._svc_list.scheduleDelayedItemsLayout()
             self._svc_list.viewport().update()
             self._rebuild_sidebar()

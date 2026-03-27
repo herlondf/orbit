@@ -1282,7 +1282,11 @@ class GeneralSettingsDialog(QDialog):  # pragma: no cover
 
         # Sidebar style picker
         self._sidebar_style_combo = QComboBox()
-        _style_map = {'discord': 'Discord', 'arc': 'Arc Browser', 'dock': 'Dock (macOS)', 'notion': 'Notion'}
+        _style_map = {
+            'discord': 'Discord', 'arc': 'Arc Browser', 'dock': 'Dock (macOS)', 'notion': 'Notion',
+            'slack': 'Slack', 'spotify': 'Spotify', 'teams': 'Teams',
+            'telegram': 'Telegram', 'figma': 'Figma', 'linear': 'Linear',
+        }
         for key, label in _style_map.items():
             self._sidebar_style_combo.addItem(label, key)
         current = self._settings.get('sidebar_style', 'discord')
@@ -1323,38 +1327,38 @@ class GeneralSettingsDialog(QDialog):  # pragma: no cover
         opacity_row.addWidget(self._opacity_lbl)
         lay.addLayout(opacity_row)
 
-        # Custom background color
+        # Color preset selector
         from PySide6.QtWidgets import QPushButton
-        color_row = QHBoxLayout()
-        color_row.addWidget(QLabel('Cor de fundo:'))
-        self._bg_color_btn = QPushButton(self._settings.get('sidebar_custom_bg', '') or 'Padrão do estilo')
-        self._bg_color_btn.setCursor(Qt.PointingHandCursor)
-        self._bg_color_btn.setFixedHeight(28)
-        self._bg_color_btn.clicked.connect(self._pick_sidebar_bg)
-        color_row.addWidget(self._bg_color_btn, 1)
-        self._bg_reset_btn = QPushButton('✕')
-        self._bg_reset_btn.setFixedSize(28, 28)
-        self._bg_reset_btn.setCursor(Qt.PointingHandCursor)
-        self._bg_reset_btn.setToolTip('Resetar para padrão')
-        self._bg_reset_btn.clicked.connect(self._reset_sidebar_bg)
-        color_row.addWidget(self._bg_reset_btn)
-        lay.addLayout(color_row)
-
-        # Custom border color
-        border_row = QHBoxLayout()
-        border_row.addWidget(QLabel('Cor da borda:'))
-        self._border_color_btn = QPushButton(self._settings.get('sidebar_custom_border', '') or 'Padrão do estilo')
-        self._border_color_btn.setCursor(Qt.PointingHandCursor)
-        self._border_color_btn.setFixedHeight(28)
-        self._border_color_btn.clicked.connect(self._pick_sidebar_border)
-        border_row.addWidget(self._border_color_btn, 1)
-        self._border_reset_btn = QPushButton('✕')
-        self._border_reset_btn.setFixedSize(28, 28)
-        self._border_reset_btn.setCursor(Qt.PointingHandCursor)
-        self._border_reset_btn.setToolTip('Resetar para padrão')
-        self._border_reset_btn.clicked.connect(self._reset_sidebar_border)
-        border_row.addWidget(self._border_reset_btn)
-        lay.addLayout(border_row)
+        _COLOR_PRESETS = {
+            'Padrão':     ('', ''),
+            'Midnight':   ('#0d1117', '#1b2332'),
+            'Ocean':      ('#0a1628', '#0d3b66'),
+            'Forest':     ('#0d1a0d', '#1a3a1a'),
+            'Wine':       ('#1a0d14', '#3d1a2a'),
+            'Slate':      ('#1e2028', '#2d3040'),
+            'Charcoal':   ('#111111', '#222222'),
+            'Navy':       ('#0a0e1a', '#1a2040'),
+            'Obsidian':   ('#080808', '#1a1a1a'),
+        }
+        lay.addWidget(QLabel('Preset de cores:'))
+        preset_grid = QGridLayout()
+        preset_grid.setSpacing(6)
+        cur_bg = self._settings.get('sidebar_custom_bg', '')
+        col = 0
+        for name, (bg, border) in _COLOR_PRESETS.items():
+            btn = QPushButton(name)
+            btn.setFixedHeight(30)
+            btn.setCursor(Qt.PointingHandCursor)
+            is_active = (cur_bg == bg)
+            preview_bg = bg or '#1c1c23'
+            if is_active:
+                btn.setStyleSheet(f'background:{preview_bg}; color:#fff; border:2px solid {self._settings.get("accent", "#7c6af7")}; border-radius:6px; font-size:10px;')
+            else:
+                btn.setStyleSheet(f'background:{preview_bg}; color:#aaa; border:1px solid #3e3e52; border-radius:6px; font-size:10px;')
+            btn.clicked.connect(lambda _, b=bg, br=border, n=name: self._apply_color_preset(b, br, n))
+            preset_grid.addWidget(btn, col // 3, col % 3)
+            col += 1
+        lay.addLayout(preset_grid)
 
         lay.addWidget(_separator())
         lay.addWidget(_section_title('COMPORTAMENTO'))
@@ -1639,41 +1643,13 @@ class GeneralSettingsDialog(QDialog):  # pragma: no cover
         if callable(cb):
             cb(value)
 
-    def _pick_sidebar_bg(self):
-        from PySide6.QtWidgets import QColorDialog
-        color = QColorDialog.getColor(QColor(self._settings.get('sidebar_custom_bg', '#1c1c23')), self, 'Cor de fundo da sidebar')
-        if color.isValid():
-            hex_c = color.name()
-            self._bg_color_btn.setText(hex_c)
-            self._bg_color_btn.setStyleSheet(f'background:{hex_c}; color:#fff; border-radius:4px;')
-            cb = self._cbs.get('apply_sidebar_custom_bg')
-            if callable(cb):
-                cb(hex_c)
-
-    def _reset_sidebar_bg(self):
-        self._bg_color_btn.setText('Padrão do estilo')
-        self._bg_color_btn.setStyleSheet('')
-        cb = self._cbs.get('apply_sidebar_custom_bg')
-        if callable(cb):
-            cb('')
-
-    def _pick_sidebar_border(self):
-        from PySide6.QtWidgets import QColorDialog
-        color = QColorDialog.getColor(QColor(self._settings.get('sidebar_custom_border', '#323241')), self, 'Cor da borda da sidebar')
-        if color.isValid():
-            hex_c = color.name()
-            self._border_color_btn.setText(hex_c)
-            self._border_color_btn.setStyleSheet(f'background:{hex_c}; color:#fff; border-radius:4px;')
-            cb = self._cbs.get('apply_sidebar_custom_border')
-            if callable(cb):
-                cb(hex_c)
-
-    def _reset_sidebar_border(self):
-        self._border_color_btn.setText('Padrão do estilo')
-        self._border_color_btn.setStyleSheet('')
-        cb = self._cbs.get('apply_sidebar_custom_border')
-        if callable(cb):
-            cb('')
+    def _apply_color_preset(self, bg: str, border: str, name: str):
+        cb_bg = self._cbs.get('apply_sidebar_custom_bg')
+        cb_border = self._cbs.get('apply_sidebar_custom_border')
+        if callable(cb_bg):
+            cb_bg(bg)
+        if callable(cb_border):
+            cb_border(border)
 
     # ── save & close ──────────────────────────────────────────────────────────
 
