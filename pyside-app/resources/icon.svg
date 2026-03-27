@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="40%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#24273a"/>
+      <stop offset="100%" stop-color="#181926"/>
+    </radialGradient>
+    <radialGradient id="planet" cx="38%" cy="32%" r="65%">
+      <stop offset="0%" stop-color="#b7bdf8"/>
+      <stop offset="40%" stop-color="#8aadf4"/>
+      <stop offset="100%" stop-color="#569fbc"/>
+    </radialGradient>
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f5a97f" stop-opacity="0.85"/>
+      <stop offset="50%" stop-color="#c6a0f6"/>
+      <stop offset="100%" stop-color="#8bd5ca" stop-opacity="0.85"/>
+    </linearGradient>
+    <clipPath id="frontClip">
+      <rect x="0" y="270" width="512" height="242"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect width="512" height="512" rx="110" fill="url(#bg)"/>
+
+  <!-- Stars -->
+  <circle cx="82"  cy="75"  r="3" fill="#cad3f5" opacity="0.50"/>
+  <circle cx="425" cy="95"  r="2" fill="#cad3f5" opacity="0.35"/>
+  <circle cx="55"  cy="395" r="2" fill="#cad3f5" opacity="0.40"/>
+  <circle cx="450" cy="420" r="3" fill="#cad3f5" opacity="0.30"/>
+  <circle cx="390" cy="48"  r="2" fill="#cad3f5" opacity="0.45"/>
+  <circle cx="100" cy="458" r="2" fill="#cad3f5" opacity="0.30"/>
+  <circle cx="462" cy="195" r="2" fill="#cad3f5" opacity="0.25"/>
+  <circle cx="32"  cy="250" r="2" fill="#cad3f5" opacity="0.20"/>
+
+  <!-- Full orbit ring — back half will be covered by planet -->
+  <ellipse cx="256" cy="256" rx="175" ry="62"
+           fill="none" stroke="url(#ringGrad)" stroke-width="14"
+           transform="rotate(-25, 256, 256)" opacity="0.65"/>
+
+  <!-- Planet -->
+  <circle cx="256" cy="256" r="100" fill="url(#planet)"/>
+
+  <!-- Planet specular highlight -->
+  <ellipse cx="218" cy="215" rx="46" ry="30"
+           fill="white" opacity="0.13"
+           transform="rotate(-30, 218, 215)"/>
+
+  <!-- Front orbit ring — drawn on top of planet (clipped to lower half) -->
+  <ellipse cx="256" cy="256" rx="175" ry="62"
+           fill="none" stroke="url(#ringGrad)" stroke-width="14"
+           transform="rotate(-25, 256, 256)"
+           clip-path="url(#frontClip)" opacity="0.95"/>
+
+  <!-- Satellite on the front-left of the orbit -->
+  <circle cx="162" cy="348" r="20" fill="#ed8796" opacity="0.92"/>
+  <circle cx="162" cy="348" r="10" fill="white"   opacity="0.75"/>
+</svg>

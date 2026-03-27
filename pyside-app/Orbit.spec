@@ -4,14 +4,24 @@ from pathlib import Path
 
 block_cipher = None
 
+# Locate rlottie DLL (ships inside the rlottie_python package)
+try:
+    import rlottie_python as _rl
+    _rl_dir = Path(_rl.__file__).parent
+    _rlottie_dll = str(_rl_dir / 'rlottie.dll')
+    _rlottie_binaries = [(_rlottie_dll, '.')]
+except Exception:
+    _rlottie_binaries = []
+
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=_rlottie_binaries,
     datas=[
         ('assets', 'assets'),
         ('resources', 'resources'),
         ('app', 'app'),
+        ('../assets', 'assets'),
     ],
     hiddenimports=[
         'PySide6.QtWebEngineCore',
@@ -23,11 +33,14 @@ a = Analysis(
         'win32api',
         'websocket',
         'cryptography',
+        'rlottie_python',
+        'PIL',
+        'PIL.Image',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'unittest', 'email', 'html', 'http', 'urllib', 'xmlrpc'],
+    excludes=['tkinter', 'unittest', 'xmlrpc'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
